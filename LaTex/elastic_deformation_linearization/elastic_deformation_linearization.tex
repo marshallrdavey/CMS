@@ -1,0 +1,91 @@
+\documentclass{article}
+\usepackage{fancyhdr}
+\usepackage{extramarks}
+\usepackage{amsmath}
+\usepackage{amsthm}
+\usepackage{amsfonts}
+\usepackage{enumitem}
+
+\topmargin=-0.45in
+\evensidemargin=0in
+\oddsidemargin=0in
+\textwidth=6.5in
+\textheight=9.0in
+\headsep=0.25in
+\pagestyle{empty}
+\linespread{1.5}
+
+\def \grad{\nabla}
+\def \p{\partial}
+
+\def \CC{\mathbb{C}}
+\def \FF{\mathbb{F}}
+\def \II{\mathbb{I}}
+\def \RR{\mathbb{R}}
+\def \PP{\mathbb{P}}
+\def \SS{\mathbb{S}}
+\def \EE{\mathbb{E}}
+\def \KK{\mathbb{K}}
+\def \bs{\boldsymbol}
+\def \mc{\mathcal}
+
+\renewcommand\headrulewidth{0.4pt}
+\renewcommand\footrulewidth{0.4pt}
+
+\setlength\parindent{0pt} % Removes all indentation from paragraphs
+
+
+\begin{document}
+From  section 5.5
+\[\delta W_\text{int} = \int_\Omega \PP:\delta\dot{\FF} = \int_\Omega \SS:\delta\dot{\EE}\]
+\[\delta W_\text{ext} = \int_\Omega \bs{f}_0\cdot\delta \bs{v}+\int_\Gamma \bs{t}_0\cdot\delta \bs{v}\]
+\[\delta W = \delta W_\text{int} - \delta W_\text{ext} \]
+
+From section 4.11 and 4.12
+\[\dot\FF = \grad_0\bs{v}\]
+\[\dot\EE = \frac{1}{2}\dot\CC = \frac{1}{2}(\dot\FF^T\FF+\FF^T\dot\FF)\]
+
+From section 6.3 we can define the requisite fourth order tensors
+\[\mc{A} = \frac{\p\PP}{\p\FF}=\frac{\p^2\Psi}{\p\FF\p\FF}\]
+\[\mc{C} = \frac{\p\SS}{\p\EE}= 2\frac{\p\SS}{\p\CC}=\frac{\p^2\Psi}{\p\EE\p\EE}=4\frac{\p^2\Psi}{\p\CC\p\CC}\]
+
+From section 8.2 we linearize the work in the direction of an increment $\bs u$
+\[\delta W + D\delta W [\bs{u}] =  0\]
+\[D\delta W [\bs{u}] = D\delta W_\text{int} [\bs{u}] - D\delta W_\text{ext} [\bs{u}]\]
+
+With regards to the first Piola-Kirchhoff stress tensor we have
+\begin{align*}
+D\delta W_\text{int}[\bs u] &= \int_\Omega D(\delta\dot\FF:\PP)[\bs u] \\
+ &= \int_\Omega \delta\dot\FF:D\PP[\bs u] + \int_\Omega \PP:D\delta\dot\FF[\bs u] \\
+ &= \int_\Omega \grad_0\delta\bs v:\mc A:\grad_0\bs u  
+\end{align*}
+
+Note that $\dot\FF$ is a function of the virtual velocity, $\delta\bs v$, so it is constant with respect to $\bs u$. The derivation of the second Piola-Kirchhoff result is given in section 8.3. From 8.5 we note that linearization for the body force term is superfluous and we will choose to ignore surface forces for the time being. Taken together the linearization comes to
+\[-\int_\Omega \grad_0\delta\bs v:\mc A:\grad_0\bs u = \int_\Omega \PP:\grad_0\delta\bs v - \int_\Omega \bs{f}_0\cdot\delta \bs{v} \]
+
+For a given element, the standard shape function for a node $a$ is given as $\phi_a$. This differs from the notation used in chapter 9, but is consistent with notation I am more familiar with. For example, we can obtain the virtual velocity at a point $\bs x$ within the element if we know the nodal virtual velocities, $\delta\bs v_a$, in the standard way.
+\[\delta\bs v(\bs x) = \sum_a \phi_a(\bs x) \delta\bs v_a\]
+
+We take advantage of the finite element method in this way in section 9.3. Consider simplifying the right-hand side of the linearization by considering the virtual velocity component contribution from the node $a$.
+\begin{align*}
+\delta W_a & = \int_\Omega \PP:\grad_0(\phi_a\delta\bs v_a) - \int_\Omega \bs{f}_0\cdot(\delta \bs{v}_a\phi_a)\\
+& = \int_\Omega \PP:(\delta\bs v_a \otimes \grad_0\phi_a) - \int_\Omega \phi_a\bs{f}_0\cdot\delta \bs{v}_a\\
+& = \delta\bs v_a\cdot \bigg(\int_\Omega \PP\cdot\grad_0\phi_a - \int_\Omega \phi_a\bs{f}_0 \bigg)
+\end{align*}
+
+Section 9.1 clarifies the definition of $\grad_0$ if needed. We will now deal with the left-hand side of the linearization with the virtual velocity component from node $a$ and the displacement, $\bs u$, component from node $b$ within the same element.
+\begin{align*}
+D\delta W [\phi_b\bs{u}_b] &= \int_\Omega \grad_0(\phi_a\delta\bs v_a):\mc A:\grad_0(\phi_b\bs u_b)  \\
+& = \int_\Omega (\delta\bs v_a\otimes\grad_0\phi_a):\mc A:(\bs u_b\otimes\grad_0\phi_b) \\
+& = \sum_{i,j,k,l}\bigg(\delta v_{a,i} u_{b,k} \int_\Omega\frac{\p \phi_a}{\p X_j}\mc A_{ijkl}\frac{\p \phi_b}{\p X_l}\bigg) \\
+& = \sum_{i,j,k,l}\bigg(\delta v_{a,i} u_{b,j} \int_\Omega\frac{\p \phi_a}{\p X_k}\mc A_{ikjl}\frac{\p \phi_b}{\p X_l}\bigg) \\
+& = \delta\bs v_a \cdot \bs \KK_{ab} \bs u_b, \text{where }\bs [\KK_{ab}]_{ij} = \sum_{k,l}\int_\Omega\frac{\p \phi_a}{\p X_k}\mc A_{ikjl}\frac{\p \phi_b}{\p X_l}
+\end{align*}
+
+Let's first consider the case where the mesh is comprised of a single element $(e)$ with nodes $\{n_1,..,n_N\}$. We can associate the displacement terms from all nodes within the element with the virtual velocity component of the node $n_J$ to solve the linearization in the following way.
+\[ \text{-}\delta\bs v_{n_J} \cdot \sum_{n_K \in (e)}\bs \KK_{n_Jn_K} \bs u_{n_K} = \delta\bs v_{n_J}\cdot \bigg(\int_\Omega \PP\cdot\grad_0\phi_{n_J} - \int_\Omega \phi_{n_J}\bs{f}_0 \bigg)\]
+\[\sum_{n_K \in (e)}\bs \KK_{n_Jn_K} \bs u_{n_K} = \int_\Omega \phi_{n_J}\bs{f}_0-\int_\Omega \PP\cdot\grad_0\phi_{n_J}\]
+
+This procedure can be repeated with every node within the element to construct a square stiffness matrix from which we can solve for the displacements each node from the given internal and external forces. The extension to a mesh is described in section 9.4.5. In synopsis, given two nodes, $a$ and $b$, you sum the $\KK_{ab}$ from all of the elements that contain the two nodes. You then repeat this procedure for all connected node pairs within the mesh to generate the stiffness matrix for the entire mesh.
+
+\end{document}
