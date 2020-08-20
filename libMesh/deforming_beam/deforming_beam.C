@@ -1,16 +1,21 @@
 // \author Marshall Davey
-// \date 2020
+// \date August 2020
 // Adapted from libMesh systems_of_equations_ex7
 //
-// In this example, we consider an elastic cantilever beam modeled. The implementation 
+// In this example, we consider an elastic cantilever beam modeled with an
+// incompressible, neohookean constitutive model. The implementation 
 // presented here uses NonlinearImplicitSystem. The following equation is used to 
 // define work.
 // 
-// W(C) = (a/2b)*exp(b*(tr(C) - 3))
+// W(CC) = a*(tr(CC_bar) - 3)
+//
 // where:
 //  * u is the displacement 
-//  * F is the deformation gradient tensor, I + du/dX
-//  * C is the right Cuachy-Green tensor, F^T F
+//  * FF is the deformation gradient tensor, I + du/dX
+//  * J is the volume change, det(FF)
+//  * FF_bar is the deviatoric component of FF, J^(-1/3)FF
+//  * CC is the right Cuachy-Green tensor, FF^T FF
+//  * CC_bar is the deviatoric component of C, J^(-2/3)CC
 // 
 // We formulate the PDE on the reference geometry (\Omega) as opposed to the deformed
 // geometry (\Omega^deformed). 
@@ -18,12 +23,13 @@
 //     \int_\Omega PP_ij v_i,j = \int_\Omega f_i v_i + \int_\Gamma g_i v_i ds
 //
 // where:
-//  * PP is the first Piola-Kirchhoff stress tensor, dW(C)/dF 
+//  * PP is the first Piola-Kirchhoff stress tensor, dW(CC)/dFF 
 //  * v is the velocity
 //  * f is a body load
 //  * g is a surface traction on the surface \Gamma
 //
-// In this example we only consider a body load (e.g. gravity), hence we set g = 0.
+// In this example we only consider a body load (e.g. gravity), hence we set g = 0. We use
+// an ExplicitSystem to ouput the J value of each element given a solution. 
 
 // C++ include files that we need
 #include <iostream>
@@ -50,6 +56,7 @@
 #include "libmesh/dirichlet_boundaries.h"
 #include "libmesh/zero_function.h"
 #include "libmesh/enum_solver_package.h"
+#include "libmesh/exact_solution.h"
 
 // The nonlinear solver and system we will be using
 #include "libmesh/nonlinear_solver.h"
@@ -86,52 +93,38 @@ public:
   {
     return i == j ? 1. : 0.;
   }
-
-  /**
-   * Evaluate the trace of a tensor
-   */
-  Real trace(const DenseMatrix<Number> & tensor)
-  {
-    Real tr = 0;
-    for (unsigned int i = 0; i < tensor.m(); i++)
-    {
-      tr += tensor(i,i);
-    }
-    return tr;
-  }
     
   /**
    * Evaluate the fist invariant 
    */ 
-  Real I_1(const DenseMatrix<Number> & FF)
+  Real I_1(const TensorValue<Number> & FF)
   {
-    DenseMatrix<Number> CC = FF;
-    CC.left_multiply_transpose(CC);
-    return trace(CC);
+    TensorValue<Number> CC = FF.transpose()*FF;
+    return CC.tr();
   }
 
   /**
    * PK1 stress
    */
-  DenseMatrix<Number> PK1_stress(const DenseMatrix<Number> & FF,
+  TensorValue<Number> PK1_stress(const TensorValue<Number> & FF,
                                  const Real & I_1,
-                                 const Real & a,
-                                 const Real & b)
+                                 const Real & J,
+                                 const Real & a)
   {
-    DenseMatrix<Number> PP = FF;
-    PP.scale(a*exp(b*(I_1-3.0)));  
+    TensorValue<Number> PP = a/cbrt(J*J)*(FF - I_1*FF.inverse().transpose()/3.0);
     return PP;
   }
 
   /**
    * dPP/dFF
    */
-  DenseMatrix<Number> script_A(const DenseMatrix<Number> & FF,
+  DenseMatrix<Number> script_A(const TensorValue<Number> & FF,
                                const Real & I_1,
-                               const Real & a,
-                               const Real & b)
+                               const Real & J,
+                               const Real & a)
   {
     DenseMatrix<Number> A(9,9);
+    TensorValue<Number> FF_inv = FF.inverse();
     for (unsigned int i = 0; i < 3; i++)
     {
       for (unsigned int j = 0; j < 3; j++)
@@ -140,7 +133,11 @@ public:
         {
           for (unsigned int l = 0; l < 3; l++)
           {
-            A(3*i + k,3*j + l) = 2*a*b*exp(b*(I_1 - 3.0))*FF(i,j)*FF(k,l) + a*exp(b*(I_1-3.0))*delta(i,k)*delta(j,l);
+            A(3*i + k,3*j + l) = a/cbrt(J*J)*( 2.0*I_1*FF_inv(j,i)*FF_inv(l,k)
+                                             - 2.0/3.0*FF(i,j)*FF_inv(l,k)
+                                             + delta(i,k)*delta(j,l)
+                                             - 2.0/3.0*FF(k,l)*FF_inv(j,i)
+                                             + I_1/3.0*FF_inv(j,k)*FF_inv(l,i));
           }
         }
       }
@@ -233,7 +230,7 @@ public:
       for (unsigned int qp=0; qp<qrule.n_points(); qp++)
       {
         DenseVector<Number> u_vec(3);
-        DenseMatrix<Number> grad_u(3, 3);
+        TensorValue<Number> grad_u;
         // create u and du/dX for qp
         for (unsigned int var_i=0; var_i<3; var_i++)
         {
@@ -254,7 +251,7 @@ public:
         }
 
         // find the deformation gradient            
-        DenseMatrix<Number> FF = grad_u;
+        TensorValue<Number> FF = grad_u;
         // F = I + grad_u
         for (unsigned int var=0; var<3; var++)
         {
@@ -264,8 +261,11 @@ public:
         // generate the first invarint using FF
         const Real I1 = I_1(FF);
 
+        // find J
+        const Number J = FF.det();
+
         // generate script_A for Ke
-        const DenseMatrix<Number> AA = script_A(FF, I1, a, b); 
+        const DenseMatrix<Number> AA = script_A(FF, I1, J, a); 
             
         // generate tangent stiffness matrix
         // to end up with Ke*([u,v,w]^T)
@@ -281,7 +281,7 @@ public:
                 {
                   for (unsigned int l=0; l<3; l++)
                   {
-                    Ke_var[i][j](dof_i,dof_j) += -AA(3*i + j, 3*k + l)*dphi[dof_i][qp](k)*dphi[dof_j][qp](l)*JxW[qp]; 
+                    Ke_var[i][j](dof_i,dof_j) += AA(3*i + j, 3*k + l)*dphi[dof_i][qp](k)*dphi[dof_j][qp](l)*JxW[qp]; 
                   }
                 }
               }
@@ -305,7 +305,9 @@ public:
   {
     const Real a = es.parameters.get<Real>("a");
     const Real b = es.parameters.get<Real>("b");
-    const Real forcing_magnitude = es.parameters.get<Real>("forcing_magnitude");
+    const Real x_forcing_magnitude = es.parameters.get<Real>("x_forcing_magnitude");
+    const Real y_forcing_magnitude = es.parameters.get<Real>("y_forcing_magnitude");
+    const Real z_forcing_magnitude = es.parameters.get<Real>("z_forcing_magnitude");
 
     const MeshBase & mesh = es.get_mesh();
     const unsigned int dim = mesh.mesh_dimension();
@@ -366,7 +368,7 @@ public:
       {
         // u and du/dX
         DenseVector<Number> u_vec(3);
-        DenseMatrix<Number> grad_u(3, 3);
+        TensorValue<Number> grad_u;
         for (unsigned int var_i=0; var_i<3; var_i++)
         {
           for (unsigned int j=0; j<n_var_dofs; j++)
@@ -385,8 +387,7 @@ public:
         }
 
         // Define the deformation gradient
-        DenseMatrix<Number> FF = grad_u;
-        FF = grad_u;
+        TensorValue<Number> FF = grad_u;
         for (unsigned int var=0; var<3; var++)
         {
           FF(var, var) += 1.0;
@@ -394,15 +395,18 @@ public:
         
         // generate I_1 from FF
         const Real I1 = I_1(FF);
+
+        // generat J
+        const Number J = FF.det();
         
         // generate PK1
-        const DenseMatrix<Number> PP = PK1_stress(FF, I1, a, b);
+        const TensorValue<Number> PP = PK1_stress(FF, I1, J, a);
 
         // construct force vector
         DenseVector<Number> f_vec(3);
-        f_vec(0) = 0.0;
-        f_vec(1) = 0.0;
-        f_vec(2) = -forcing_magnitude;
+        f_vec(0) = x_forcing_magnitude;
+        f_vec(1) = y_forcing_magnitude;
+        f_vec(2) = z_forcing_magnitude;
 
         // construct rhs vector
         for (unsigned int dof_i=0; dof_i<n_var_dofs; dof_i++)
@@ -424,6 +428,96 @@ public:
       // add vector to residual spare vector
       residual.add_vector (Re, dof_indices);
     } // end element loop
+  }
+
+  /**
+   * Compute the average J value for each element at the current solution.
+   */
+  void compute_J()
+  {
+    const MeshBase & mesh = es.get_mesh();
+    const unsigned int dim = mesh.mesh_dimension();
+    
+    NonlinearImplicitSystem & system =
+      es.get_system<NonlinearImplicitSystem>("NonlinearElasticity");
+    
+    unsigned int displacement_vars[3];
+    displacement_vars[0] = system.variable_number ("u");
+    displacement_vars[1] = system.variable_number ("v");
+    displacement_vars[2] = system.variable_number ("w");
+    const unsigned int u_var = system.variable_number ("u");
+
+    const DofMap & dof_map = system.get_dof_map();
+    FEType fe_type = dof_map.variable_type(u_var);
+    std::unique_ptr<FEBase> fe (FEBase::build(dim, fe_type));
+    QGauss qrule (dim, fe_type.default_quadrature_order());
+    fe->attach_quadrature_rule (&qrule);
+
+    const std::vector<Real> & JxW = fe->get_JxW();
+    const std::vector<std::vector<RealGradient>> & dphi = fe->get_dphi();
+
+    // Also, get a reference to the ExplicitSystem
+    ExplicitSystem & J_system = es.get_system<ExplicitSystem>("JSystem");
+    const DofMap & J_dof_map = J_system.get_dof_map();
+
+    unsigned int J_var = J_system.variable_number ("J");
+
+    // Storage for the stress dof indices on each element
+    std::vector<std::vector<dof_id_type>> dof_indices_var(system.n_vars());
+    std::vector<dof_id_type> J_dof_indices_var;
+    
+    // new element volume
+    Number current_volume;
+
+    // element loop
+    for (const auto & elem : mesh.active_local_element_ptr_range())
+    {
+      current_volume = 0.0;
+
+      for (unsigned int var=0; var<3; var++)
+      {
+          dof_map.dof_indices (elem, dof_indices_var[var], displacement_vars[var]);
+      }
+
+      const unsigned int n_var_dofs = dof_indices_var[0].size();
+
+      fe->reinit (elem);
+
+      for (unsigned int qp=0; qp<qrule.n_points(); qp++)
+      {
+        TensorValue<Number> grad_u;
+        for (unsigned int var_i=0; var_i<3; var_i++)
+        {
+          for (unsigned int var_j=0; var_j<3; var_j++)
+          {
+            for (unsigned int j=0; j<n_var_dofs; j++)
+            {
+              grad_u(var_i,var_j) += dphi[j][qp](var_j) * system.current_solution(dof_indices_var[var_i][j]);
+            }
+          }
+        }
+
+        TensorValue<Number> FF = grad_u;
+        for (unsigned int var=0; var<3; var++)
+        {
+          FF(var, var) += 1.0;
+        }
+
+        current_volume += FF.det()*JxW[qp];
+      }// end qp loop
+
+      const Number J = current_volume/elem->volume();
+
+      J_dof_map.dof_indices (elem, J_dof_indices_var, J_var);
+      
+      // constant monomial, so only one dof index
+      dof_id_type dof_index = J_dof_indices_var[0];
+
+      J_system.solution->set(dof_index, J);
+    }// end element loop
+
+    J_system.solution->close();
+    J_system.update();
   }
 };
 
@@ -449,7 +543,9 @@ int main (int argc, char ** argv)
 
   const Real a = infile("a", 100.0);
   const Real b = infile("b", 1.0);
-  const Real forcing_magnitude = infile("forcing_magnitude", 0.001);
+  const Real x_forcing_magnitude = infile("x_forcing_magnitude", 0.0);
+  const Real y_forcing_magnitude = infile("y_forcing_magnitude", 0.0);
+  const Real z_forcing_magnitude = infile("z_forcing_magnitude", 0.0);
 
   const Real nonlinear_abs_tol = infile("nonlinear_abs_tol", 1.e-8);
   const Real nonlinear_rel_tol = infile("nonlinear_rel_tol", 1.e-8);
@@ -492,6 +588,11 @@ int main (int argc, char ** argv)
                         Utility::string_to_enum<Order>   (approx_order),
                         Utility::string_to_enum<FEFamily>(fe_family));
 
+  ExplicitSystem & J_system = 
+    equation_systems.add_system<ExplicitSystem> ("JSystem");
+  
+  J_system.add_variable("J", CONSTANT, MONOMIAL);
+ 
   equation_systems.parameters.set<Real>         ("nonlinear solver absolute residual tolerance") = nonlinear_abs_tol;
   equation_systems.parameters.set<Real>         ("nonlinear solver relative residual tolerance") = nonlinear_rel_tol;
   equation_systems.parameters.set<unsigned int> ("nonlinear solver maximum iterations")          = nonlinear_max_its;
@@ -501,7 +602,9 @@ int main (int argc, char ** argv)
 
   equation_systems.parameters.set<Real>("a") = a;
   equation_systems.parameters.set<Real>("b") = b;
-  equation_systems.parameters.set<Real>("forcing_magnitude") = forcing_magnitude;
+  equation_systems.parameters.set<Real>("x_forcing_magnitude") = x_forcing_magnitude;
+  equation_systems.parameters.set<Real>("y_forcing_magnitude") = y_forcing_magnitude;
+  equation_systems.parameters.set<Real>("z_forcing_magnitude") = z_forcing_magnitude;
 
   // Attach Dirichlet boundary conditions
   std::set<boundary_id_type> clamped_boundaries;
@@ -530,14 +633,24 @@ int main (int argc, char ** argv)
   // Set n_solves and force_scaling in nonlinear_elasticity.in.
   for (unsigned int count=0; count<n_solves; count++)
     {
-      Real previous_forcing_magnitude = equation_systems.parameters.get<Real>("forcing_magnitude");
-      equation_systems.parameters.set<Real>("forcing_magnitude") = previous_forcing_magnitude*force_scaling;
+      equation_systems.parameters.set<Real>("x_forcing_magnitude") = 
+        x_forcing_magnitude*pow(force_scaling, count);
+
+      equation_systems.parameters.set<Real>("y_forcing_magnitude") = 
+        y_forcing_magnitude*pow(force_scaling, count);
+
+      equation_systems.parameters.set<Real>("z_forcing_magnitude") = 
+        z_forcing_magnitude*pow(force_scaling, count);
 
       libMesh::out << "Performing solve "
                    << count
-                   << ", forcing_magnitude: "
-                   << equation_systems.parameters.get<Real>("forcing_magnitude")
-                   << std::endl;
+                   << ", forcing_vector: ("
+                   << equation_systems.parameters.get<Real>("x_forcing_magnitude")
+                   << ", "
+                   << equation_systems.parameters.get<Real>("y_forcing_magnitude")
+                   << ", "
+                   << equation_systems.parameters.get<Real>("z_forcing_magnitude")
+                   << ")\n";
 
       system.solve();
 
@@ -545,8 +658,11 @@ int main (int argc, char ** argv)
                    << system.n_nonlinear_iterations()
                    << " , final nonlinear residual norm: "
                    << system.final_nonlinear_residual()
-                   << std::endl
                    << std::endl;
+
+      libMesh::out << "Computing J values...\n\n";
+
+      lde.compute_J();
 
 #ifdef LIBMESH_HAVE_EXODUS_API
       std::stringstream filename;
