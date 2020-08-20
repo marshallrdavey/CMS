@@ -8,13 +8,15 @@ n_elem_z = 2
 approx_order = FIRST
 fe_family = LAGRANGE
 
-a = 100.0
+a = 10.0
 b = 0.0
-forcing_magnitude = 0.001
+x_forcing_magnitude = 0.0
+y_forcing_magnitude = 0.1
+z_forcing_magnitude = 0.0
 
 nonlinear_abs_tol = 1.e-12
 nonlinear_rel_tol = 1.e-6
 nonlinear_max_its = 25
 
-n_solves = 1
+n_solves = 3
 force_scaling = 5
