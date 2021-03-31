@@ -78,7 +78,7 @@ private:
 
     // time
     const double dt = 0.01;
-    const double end_time = 30.0;
+    const double end_time = 50.0;
     double time;
 
     // mesh
@@ -376,7 +376,11 @@ void explicit_beam<dim>::output_results(const unsigned int& step) const
     data_out.add_data_vector(velocity, velocity_names);
     data_out.add_data_vector(acceleration, acceleration_names);
     data_out.add_data_vector(J_vector, "J");
+
     data_out.build_patches();
+
+    data_out.set_flags(DataOutBase::VtkFlags(time, step));
+
     std::ofstream output("solution-" + std::to_string(step) + ".vtk");
     data_out.write_vtk(output);
 }
@@ -407,7 +411,7 @@ void explicit_beam<dim>::run()
     solve();
     output_results(step);
     
-    while(time <= end_time)
+    while(time < end_time)
     {
         ++step;
         time += dt;        
