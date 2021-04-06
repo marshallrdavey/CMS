@@ -30,7 +30,6 @@
 
 #include <deal.II/lac/affine_constraints.h>
 
-#include <deal.II/grid/grid_refinement.h>
 #include <deal.II/grid/grid_tools.h>
 
 #include <deal.II/numerics/error_estimator.h>
@@ -75,10 +74,15 @@ private:
     Tensor<2, dim> PK1_stress(const Tensor<2, dim>& FF,
                               const double& I1,
                               const double& J);
+    
+    // body force and pressure
+    const Vector<double> body_force{0.0, 0.0, 0.0};
+    const double pressure = -0.001;
+    const Vector<double> pressure_vector{0.0, 1.0, 0.0};
 
     // time
     const double dt = 0.01;
-    const double end_time = 50.0;
+    const double end_time = 30.0;
     double time;
 
     // mesh
@@ -147,6 +151,7 @@ void explicit_beam<dim>::setup_mesh()
                                               c0,           // origin corner
                                               c1,           // opposite corner
                                               true);        // colorize   
+
     triangulation.refine_global(n_global_refinements);
 }
 
@@ -202,7 +207,7 @@ void explicit_beam<dim>::assemble_system_matrix()
     // grab the dofs per cell, dim*nodes
     const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
 
-    // initialize local matrix and rhs
+    // initialize local matrix
     FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
 
     // dof vector for global indices
@@ -248,17 +253,21 @@ void explicit_beam<dim>::assemble_rhs()
     residual = 0;
     J_vector = 0;
 
-    // don't do this
-    const std::vector<double> body_force{0.0, 0.001, 0.0};
-    
     // choose quadrature rule
     const QGauss<dim> quadrature_formula(fe.degree+1);
+    const QGauss<dim - 1> quadrature_formula_face(fe.degree+1);
 
     // set up FEValues.
     FEValues<dim> fe_values(fe,
                             quadrature_formula,
                             update_values | update_gradients | 
                             update_JxW_values);
+
+    // set up FEFaceValues
+    FEFaceValues<dim> fe_face_values(fe,
+                                     quadrature_formula_face,
+                                     update_values | update_normal_vectors | 
+                                     update_JxW_values);
 
     // extractor for the displacement values
     FEValuesExtractors::Vector  u_fe(0);
@@ -267,7 +276,7 @@ void explicit_beam<dim>::assemble_rhs()
     // grab the dofs per cell, dim*nodes
     const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
 
-    // initialize local matrix and rhs
+    // initialize local rhs
     Vector<double>     cell_rhs(dofs_per_cell);
 
     // dof vector for global indices
@@ -300,7 +309,6 @@ void explicit_beam<dim>::assemble_rhs()
             new_volume += J*fe_values.JxW(q_index);
             // PK1 stress, PP            
             const Tensor<2, dim> PP = PK1_stress(FF, I1, J);
-            // const Tensor<2, dim> PP = alpha*qp_Grad_u[q_index];
 
             // loop over dof indices
             for(const unsigned int i: fe_values.dof_indices())
@@ -314,19 +322,39 @@ void explicit_beam<dim>::assemble_rhs()
                                    fe_values.JxW(q_index);  
                 }
                 // external force
-                if(time <= end_time)
+                if(time <= end_time + 0.5*dt)
                 {
                     cell_rhs(i) += rho*body_force[i_component]*
                                        fe_values.shape_value(i, q_index)*
                                        fe_values.JxW(q_index);
                 }
-                else
-                {
-                    cell_rhs(i) += 0;
-                }
-                                
-            }
+            } 
         }
+       
+        // traction on cell
+        for(const auto &face : cell->face_iterators())
+        {   
+            // check if face is on the correct boundary
+            if(face->at_boundary() && face->boundary_id() == 5)
+            {
+                // initialize face
+                fe_face_values.reinit(cell, face);
+    
+                for(const unsigned int f_q_index : fe_face_values.quadrature_point_indices())
+                {
+                    for(const unsigned int i : fe_values.dof_indices())
+                    {
+                        const unsigned int i_component = fe.system_to_component_index(i).first;
+                        cell_rhs(i) += pressure*
+                                       pressure_vector[i_component]*
+                                       fe_face_values.shape_value(i, f_q_index)*
+                                       fe_face_values.JxW(f_q_index); 
+                    }                     
+                } 
+                
+            }
+        } 
+   
         cell->get_dof_indices(local_dof_indices);
         constraints.distribute_local_to_global(
             cell_rhs, local_dof_indices, residual);
@@ -411,7 +439,7 @@ void explicit_beam<dim>::run()
     solve();
     output_results(step);
     
-    while(time < end_time)
+    while(time < end_time - 0.5*dt)
     {
         ++step;
         time += dt;        
