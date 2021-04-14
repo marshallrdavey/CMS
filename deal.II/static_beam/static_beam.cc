@@ -79,6 +79,11 @@ private:
                             const double& I1,
                             const double& J);
 
+    // body force and pressure
+    const Vector<double> body_force{0.0, 0.001, 0.0};
+    const double pressure = -0.001;
+    const Vector<double> pressure_vector{0.0, 0.0, 0.0};    
+
     // mesh
     Triangulation<dim> triangulation;
 
@@ -235,17 +240,21 @@ void static_beam<dim>::assemble_system()
     system_matrix = 0;
     residual = 0;
 
-    // don't do this
-    const std::vector<double> body_force{0.0, 0.001, 0.0};
-    
     // choose quadrature rule
     const QGauss<dim> quadrature_formula(fe.degree+1);
+    const QGauss<dim - 1> quadrature_formula_face(fe.degree+1);
 
     // set up FEValues.
     FEValues<dim> fe_values(fe,
                             quadrature_formula,
                             update_values | update_gradients | 
                             update_JxW_values);
+
+    // set up FEFaceValues
+    FEFaceValues<dim> fe_face_values(fe,
+                                     quadrature_formula_face,
+                                     update_values | update_normal_vectors | 
+                                     update_JxW_values);
 
     // extractor for the displacement values
     FEValuesExtractors::Vector  u_fe(0);
@@ -326,6 +335,31 @@ void static_beam<dim>::assemble_system()
                                    fe_values.JxW(q_index);
             }
         }
+
+        // traction on cell
+        for(const auto &face : cell->face_iterators())
+        {   
+            // check if face is on the correct boundary
+            if(face->at_boundary() && face->boundary_id() == 5)
+            {
+                // initialize face
+                fe_face_values.reinit(cell, face);
+    
+                for(const unsigned int f_q_index : fe_face_values.quadrature_point_indices())
+                {
+                    for(const unsigned int i : fe_values.dof_indices())
+                    {
+                        const unsigned int i_component = fe.system_to_component_index(i).first;
+                        cell_rhs(i) += pressure*
+                                       pressure_vector[i_component]*
+                                       fe_face_values.shape_value(i, f_q_index)*
+                                       fe_face_values.JxW(f_q_index); 
+                    }                     
+                } 
+                
+            }
+        }
+ 
         cell->get_dof_indices(local_dof_indices);
         constraints.distribute_local_to_global(
             cell_matrix, cell_rhs, local_dof_indices, system_matrix, residual);
@@ -337,11 +371,11 @@ void static_beam<dim>::assemble_system()
 template <int dim>
 void static_beam<dim>::solve()
 {
-    SolverControl            solver_control(1000, 1e-12);
+    SolverControl            solver_control(20000, 1e-10);
     SolverGMRES<Vector<double>> solver(solver_control);
 
-    PreconditionSSOR<SparseMatrix<double>> preconditioner;
-    preconditioner.initialize(system_matrix, 1.2);
+    PreconditionJacobi<SparseMatrix<double>> preconditioner;
+    preconditioner.initialize(system_matrix);
     
     newton_update = 0;
     solver.solve(system_matrix, newton_update, residual, preconditioner);
@@ -402,7 +436,7 @@ void static_beam<dim>::run()
 
 int main()
 {
-    static_beam<3> static_test(2, 1, 5.0);
+    static_beam<3> static_test(2, 2, 5.0);
     static_test.run();
 
     return 0;
