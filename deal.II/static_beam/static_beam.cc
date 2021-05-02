@@ -39,7 +39,8 @@
 
 #include <math.h>
 
-// This is a program to deform a beam with body force in the absence of momentum.
+// This is a program to deform a beam with body force and/or a traction force
+// in the absence of momentum.
 // A 2-dimensional implementation is not supported in this model.
 
 using namespace dealii;
@@ -67,8 +68,8 @@ private:
     
     // functions for mechanics
     double alpha;
-    const double beta = 1.0;
-    const double rho = 1.0;
+    const double beta = 1.;
+    const double rho = 1.;
     double delta(const unsigned int i, 
                  const unsigned int j);
     double I_1(const Tensor<2, dim>& FF);
@@ -80,9 +81,9 @@ private:
                             const double& J);
 
     // body force and pressure
-    const Vector<double> body_force{0.0, 0.001, 0.0};
-    const double pressure = -0.001;
-    const Vector<double> pressure_vector{0.0, 0.0, 0.0};    
+    const Vector<double> body_force{0., 0.001, 0.};
+    const double pressure = 0.;
+    const Vector<double> pressure_vector{0., 0., 0.};    
 
     // mesh
     Triangulation<dim> triangulation;
@@ -102,7 +103,7 @@ private:
     Vector<double> displacement;    // total displacement   
     Vector<double> newton_update;   // update from the newton iteration
     Vector<double> residual;        // residual, or system_rhs
-    const double rtol = 1.0e-6;     // residual norm tolerance for Newton's method
+    const double rtol = 1.e-6;     // residual norm tolerance for Newton's method
 
     // J storage
     Vector<double> J_vector;
@@ -125,7 +126,7 @@ template <int dim>
 double static_beam<dim>::delta(unsigned int i,
                                unsigned int j)
 {
-    return i == j ? 1.0: 0.0;
+    return i == j ? 1.: 0.;
 }
 
 // I_1 claculator, or tr(CC)
@@ -141,11 +142,7 @@ Tensor<2, dim> static_beam<dim>::PK1_stress(const Tensor<2, dim>& FF,
                                             const double& I1,
                                             const double& J)
 {
-    // return alpha*FF;
-    return alpha/cbrt(J*J)*(FF - I1*transpose(invert(FF))/3.0);
-    // return alpha*FF + beta*log(J)*transpose(invert(FF));
-    // return beta*log(J)*transpose(invert(FF)) + alpha*(FF - transpose(invert(FF)));
-    // return alpha*(FF - I1/3.0*transpose(invert(FF)));
+    return alpha/cbrt(J*J)*(FF - I1*transpose(invert(FF))/3.);
 }
 
 // script_A from the deformation dradient, d^2W/dFF^2
@@ -164,21 +161,11 @@ Tensor<4, dim> static_beam<dim>::script_A(const Tensor<2, dim>& FF,
             {
                 for(unsigned int l = 0; l < dim; ++l)
                 {
-                    A[i][j][k][l] = alpha/cbrt(J*J)*(2.0/9.0*I1*FF_inv[j][i]*FF_inv[l][k] -
-                                                 2.0/3.0*FF[i][j]*FF_inv[l][k] +
+                    A[i][j][k][l] = alpha/cbrt(J*J)*(2./9.*I1*FF_inv[j][i]*FF_inv[l][k] -
+                                                 2./3.*FF[i][j]*FF_inv[l][k] +
                                                  delta(i,k)*delta(j,l) -
-                                                 2.0/3.0*FF[k][l]*FF_inv[j][i] +
-                                                 I1/3.0*FF_inv[j][k]*FF_inv[l][i]);
-                   // A[i][j][k][l] = alpha*delta(i,k)*delta(j,l);
-                   /* A[i][j][k][l] = alpha*delta(i,k)*delta(j,l) + 
-                                    beta*FF_inv[j][i]*FF_inv[l][k] +
-                                    beta*log(J)*FF_inv[j][k]*FF_inv[l][i];*/
-                   /*A[i][j][k][l] = beta*FF_inv[j][i]*FF_inv[l][k] + 
-                                    alpha*delta(i,k)*delta(j,l) +
-                                    alpha*FF_inv[j][k]*FF_inv[l][i];*/
-                   // A[i][j][k][l] = alpha*(delta(i,k)*delta(j,l) -
-                   //                    2.0/3.0*FF[k][l]*FF_inv[j][i] +
-                   //                    I1/3.0*FF_inv[j][k]*FF_inv[l][i]);
+                                                 2./3.*FF[k][l]*FF_inv[j][i] +
+                                                 I1/3.*FF_inv[j][k]*FF_inv[l][i]);
                 }
             }
         }
@@ -278,7 +265,7 @@ void static_beam<dim>::assemble_system()
     {
         cell_matrix = 0;
         cell_rhs    = 0;
-        new_volume = 0;
+        new_volume  = 0;
 
         fe_values.reinit(cell);
         
@@ -421,11 +408,11 @@ void static_beam<dim>::run()
     unsigned int step = 0;
     std::cout << "   Residual at step " << step << ": "  << residual.l2_norm() << "\n";
     
-    while(residual.l2_norm() > rtol)
+    while(step < 10 && residual.l2_norm() > rtol)
     {
         ++step;
         solve();
-        displacement.add(1.0, newton_update);
+        displacement.add(1., newton_update);
 
         assemble_system();
         std::cout << "   Residual at step " << step << ": " << residual.l2_norm() << "\n";
@@ -436,7 +423,7 @@ void static_beam<dim>::run()
 
 int main()
 {
-    static_beam<3> static_test(2, 2, 5.0);
+    static_beam<3> static_test(2, 2, 5.);
     static_test.run();
 
     return 0;
