@@ -75,7 +75,7 @@ private:
     double alpha;
     const double kappa = 1.;
     const double rho = 1.;
-    const double eta_damping = 0.005;
+    const double eta_damping = 0.0003;
     double delta(const unsigned int i, 
                  const unsigned int j);
     double I_1(const Tensor<2, dim>& FF);
@@ -86,9 +86,9 @@ private:
                             const double& I1,
                             const double& J);
     // body force and pressure
-    const Vector<double> body_force{0.0, 0.0, 0.0};
-    const double pressure = -0.001;
-    const Vector<double> pressure_vector{0.0, 1.0, 0.0};
+    const Vector<double> body_force{0., 0.001, 0.};
+    const double pressure = 0.;
+    const Vector<double> pressure_vector{0., 0., 0.};
 
     // numerical parameters
     const double beta = 0.25;
@@ -96,7 +96,7 @@ private:
 
     // time
     const double dt = 0.1;
-    const double end_time = 10*dt;
+    const double end_time = 80.;
     double time;
 
     // mesh
@@ -127,7 +127,7 @@ private:
     Vector<double> newton_update;       // displacement update from the newton iteration
     Vector<double> residual;            // residual
     Vector<double> constrained_residual;// constrained residual, system rhs
-    const double rtol = 1.e-6;         // residual norm tolerance for Newton's method
+    const double rtol = 1.e-8;          // residual norm tolerance for Newton's method
 
     // J storage
     Vector<double> J_vector;
@@ -166,7 +166,7 @@ Tensor<2, dim> implicit_beam<dim>::PK1_stress(const Tensor<2, dim>& FF,
                                               const double& I1,
                                               const double& J)
 {
-    return alpha/cbrt(J*J)*(FF - I1*transpose(invert(FF))/3.0);
+    return alpha/cbrt(J*J)*(FF - I1*transpose(invert(FF))/3.);
 }
 
 // script_A from the deformation dradient, d^2W/dFF^2
@@ -185,11 +185,11 @@ Tensor<4, dim> implicit_beam<dim>::script_A(const Tensor<2, dim>& FF,
             {
                 for(unsigned int l = 0; l < dim; ++l)
                 {
-                    A[i][j][k][l] = alpha/cbrt(J*J)*(2.0/9.0*I1*FF_inv[j][i]*FF_inv[l][k] -
-                                                 2.0/3.0*FF[i][j]*FF_inv[l][k] +
-                                                 delta(i,k)*delta(j,l) -
-                                                 2.0/3.0*FF[k][l]*FF_inv[j][i] +
-                                                 I1/3.0*FF_inv[j][k]*FF_inv[l][i]);
+                    A[i][j][k][l] = alpha/cbrt(J*J)*(2./9.*I1*FF_inv[j][i]*FF_inv[l][k] -
+                                                     2./3.*FF[i][j]*FF_inv[l][k] +
+                                                     delta(i,k)*delta(j,l) -
+                                                     2./3.*FF[k][l]*FF_inv[j][i] +
+                                                     I1/3.*FF_inv[j][k]*FF_inv[l][i]);
                 }
             }
         }
@@ -487,7 +487,9 @@ void implicit_beam<dim>::update_step()
     residual = 0;
     residual.add(1.0, force);
     const Vector<double> negative_acceleration = -1.0*acceleration;
-    unconstrained_mass_matrix.vmult_add(residual, negative_acceleration);    
+    unconstrained_mass_matrix.vmult_add(residual, negative_acceleration);
+    residual.add(-0.5*eta_damping, velocity_tilde);
+    residual.add(-0.5*eta_damping, velocity);    
 
     // constrain residual
     constrained_residual = 0;
@@ -661,6 +663,7 @@ void implicit_beam<dim>::run()
     // initialize problem
     time = 0.;
     unsigned int step = 0;
+    unsigned int out_step = 0;
     update_force();
     initialize_acceleration();
     output_results(step);
@@ -693,14 +696,18 @@ void implicit_beam<dim>::run()
         }
 
         std::cout << "   Final residual at time step " << step << ": "  << constrained_residual.l2_norm() << "\n\n";
-        
-        output_results(step);
+       
+        if(step % 20 == 0)
+        {
+            ++out_step; 
+            output_results(out_step);
+        }
     }
 }
 
 int main()
 {
-    implicit_beam<3> implicit_test(2, 1, 5.);
+    implicit_beam<3> implicit_test(2, 2, 5.);
     implicit_test.run();
 
     return 0;

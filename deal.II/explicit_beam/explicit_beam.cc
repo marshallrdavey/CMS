@@ -38,7 +38,8 @@
 
 #include <math.h>
 
-// This is a program to deform a beam with body force in the absence of momentum.
+// This is a program to deform a beam with body force and/or a traction force
+// with an explicit time stepping scheme.
 // A 2-dimensional implementation is not supported in this model.
 
 using namespace dealii;
@@ -66,23 +67,23 @@ private:
     unsigned int n_global_refinements;
     
     // functions for mechanics
-    const double rho = 1.0; // density
     double alpha;
-    const double beta = 1.0e3;
-    const double eta_damping = 0.005; 
+    const double rho = 1.; 
+    const double beta = 1.e3;
+    const double eta_damping = 0.0003; 
     double I_1(const Tensor<2, dim>& FF);
     Tensor<2, dim> PK1_stress(const Tensor<2, dim>& FF,
                               const double& I1,
                               const double& J);
     
     // body force and pressure
-    const Vector<double> body_force{0.0, 0.0, 0.0};
-    const double pressure = -0.001;
-    const Vector<double> pressure_vector{0.0, 1.0, 0.0};
+    const Vector<double> body_force{0., 0.001, 0.};
+    const double pressure = 0.;
+    const Vector<double> pressure_vector{0., 0., 0.};
 
     // time
-    const double dt = 0.01;
-    const double end_time = 30.0;
+    const double dt = 0.002;
+    const double end_time = 80.;
     double time;
 
     // mesh
@@ -134,9 +135,7 @@ Tensor<2, dim> explicit_beam<dim>::PK1_stress(const Tensor<2, dim>& FF,
                                             const double& I1,
                                             const double& J)
 {
-    return alpha/cbrt(J*J)*(FF - I1*transpose(invert(FF))/3.0);
-    // return alpha*(FF - I1*transpose(invert(FF))/3.0);
-    // return alpha*(FF - I1*transpose(invert(FF))/3.0) + beta*log(J)*transpose(invert(FF));
+    return alpha/cbrt(J*J)*(FF - I1*transpose(invert(FF))/3.);
 }
 
 // Generate beam
@@ -236,7 +235,7 @@ void explicit_beam<dim>::assemble_system_matrix()
                                               fe_values.shape_value(i, q_index)*
                                               fe_values.shape_value(j, q_index)*
                                               fe_values.JxW(q_index):
-                                              0.0);
+                                              0.);
                 }
             }
         }
@@ -321,13 +320,9 @@ void explicit_beam<dim>::assemble_rhs()
                                    fe_values.shape_grad(i, q_index)[k]*
                                    fe_values.JxW(q_index);  
                 }
-                // external force
-                if(time <= end_time + 0.5*dt)
-                {
-                    cell_rhs(i) += rho*body_force[i_component]*
-                                       fe_values.shape_value(i, q_index)*
-                                       fe_values.JxW(q_index);
-                }
+                cell_rhs(i) += rho*body_force[i_component]*
+                                   fe_values.shape_value(i, q_index)*
+                                   fe_values.JxW(q_index);
             } 
         }
        
@@ -430,7 +425,8 @@ void explicit_beam<dim>::run()
 
     assemble_system_matrix();
     unsigned int step = 0;
-    time = 0.0;
+    unsigned int out_step = 0;
+    time = 0.;
 
     // initial step
     std::cout << "   Time: " << time << "\n";
@@ -459,13 +455,17 @@ void explicit_beam<dim>::run()
         
         // v_n+1 = v_n+1/2 + a_n+1*dt/2
         velocity.add(dt/2.0, acceleration);
-        if(step % 100 == 0) output_results(step);
+        if(step % 1000 == 0)
+        { 
+            ++out_step;
+            output_results(out_step);
+        }
     }
 }
 
 int main()
 {
-    explicit_beam<3> explicit_test(2, 1, 5.0);
+    explicit_beam<3> explicit_test(2, 2, 5.);
     explicit_test.run();
     return 0;
 }
