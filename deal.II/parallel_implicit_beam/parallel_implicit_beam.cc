@@ -12,6 +12,7 @@
 #include <deal.II/dofs/dof_tools.h>
 
 #include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_simplex_p.h>
 #include <deal.II/fe/fe_system.h>
 #include <deal.II/fe/fe_values.h>
 
@@ -75,10 +76,9 @@ template <int dim>
 class implicit_beam
 {
 public:
-    implicit_beam(const MPI_Comm mpi_communicator,
+    implicit_beam(const parallel::shared::Triangulation<dim>& triangulation,
                   const unsigned int fe_order,
-                  const double alpha,
-                  const parallel::shared::Triangulation<dim>& triangulation); 
+                  const double alpha);
 
     void run();
 
@@ -98,8 +98,16 @@ private:
     MPI_Comm mpi_comm;
     ConditionalOStream pcout;
 
-    // mesh parameters
+    // mesh and finite elementparameters
+    SmartPointer<const parallel::shared::Triangulation<dim>> tria;
+    bool use_simplex;
     unsigned int fe_order;
+    std::unique_ptr<FESystem<dim>> fe;
+    std::unique_ptr<Quadrature<dim>> quadrature_formula;
+    std::unique_ptr<Quadrature<dim-1>> quadrature_formula_face; 
+    DoFHandler<dim> dof_handler;
+    IndexSet locally_owned_dofs;
+    IndexSet locally_relevant_dofs;
     
     // functions for mechanics
     double alpha;
@@ -115,6 +123,7 @@ private:
     Tensor<4, dim> script_A(const Tensor<2, dim>& FF,
                             const double& I1,
                             const double& J);
+
     // body force and pressure
     const Vector<double> body_force{0., 0.001, 0.};
     const double pressure = 0.;
@@ -128,15 +137,6 @@ private:
     const double dt = 0.1;
     const double end_time = 80.;
     double time;
-
-    // mesh
-    SmartPointer<const parallel::shared::Triangulation<dim>> tria;
-
-    // fe stuff
-    FESystem<dim>   fe;
-    DoFHandler<dim> dof_handler;
-    IndexSet locally_owned_dofs;
-    IndexSet locally_relevant_dofs;
 
     // constraints
     AffineConstraints<double> constraints;
@@ -170,18 +170,30 @@ private:
 
 // class constructor
 template <int dim>
-implicit_beam<dim>::implicit_beam(const MPI_Comm mpi_communicator,
+implicit_beam<dim>::implicit_beam(const parallel::shared::Triangulation<dim>& triangulation,
                                   const unsigned int fe_order,
-                                  const double alpha,
-                                  const parallel::shared::Triangulation<dim>& triangulation)
-    :mpi_comm(mpi_communicator),
-     pcout(std::cout, (Utilities::MPI::this_mpi_process(mpi_communicator) == 0)),
-     fe_order(fe_order),
-     alpha(alpha),
+                                  const double alpha)
+    :mpi_comm(triangulation.get_communicator()),
+     pcout(std::cout, (Utilities::MPI::this_mpi_process(mpi_comm) == 0)),
      tria(&triangulation),
-     fe(FE_Q<dim>(fe_order), dim),
-     dof_handler(triangulation)
-{}
+     use_simplex(!triangulation.all_reference_cells_are_hyper_cube()),
+     fe_order(fe_order),
+     dof_handler(triangulation),
+     alpha(alpha)
+{
+    if(use_simplex)
+    {
+        fe = std::make_unique<FESystem<dim>>(FE_SimplexP<dim>(fe_order), dim);
+        quadrature_formula = std::make_unique<QGaussSimplex<dim>>(fe_order + 1);
+        quadrature_formula_face = std::make_unique<QGaussSimplex<dim-1>>(fe_order + 1); 
+    }
+    else
+    {
+        fe = std::make_unique<FESystem<dim>>(FE_Q<dim>(fe_order), dim);
+        quadrature_formula = std::make_unique<QGauss<dim>>(fe_order + 1);
+        quadrature_formula_face = std::make_unique<QGauss<dim-1>>(fe_order + 1); 
+    }
+}
 
 // Kronecker delta function
 template <int dim>
@@ -240,7 +252,7 @@ template <int dim>
 void implicit_beam<dim>::setup_system()
 {
     // DoF distribution
-    dof_handler.distribute_dofs(fe);
+    dof_handler.distribute_dofs(*fe);
     locally_owned_dofs = dof_handler.locally_owned_dofs();
     DoFTools::extract_locally_relevant_dofs(dof_handler, locally_relevant_dofs);    
 
@@ -333,17 +345,14 @@ void implicit_beam<dim>::assemble_mass_matrix()
     constrained_mass_matrix = 0;
     unconstrained_mass_matrix = 0;
 
-    // choose quadrature rule
-    const QGauss<dim> quadrature_formula(fe.degree+1);
-
     // set up FEValues.
-    FEValues<dim> fe_values(fe,
-                            quadrature_formula,
+    FEValues<dim> fe_values(*fe,
+                            *quadrature_formula,
                             update_values |  
                             update_JxW_values);
 
     // grab the dofs per cell, dim*nodes
-    const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
+    const unsigned int dofs_per_cell = fe->n_dofs_per_cell();
 
     // initialize local matrix
     FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
@@ -367,11 +376,11 @@ void implicit_beam<dim>::assemble_mass_matrix()
                 // loop over dof indices
                 for(const unsigned int i: fe_values.dof_indices())
                 {
-                    const unsigned int i_component = fe.system_to_component_index(i).first; 
+                    const unsigned int i_component = fe->system_to_component_index(i).first; 
                     // loop over dof indices
                     for(const unsigned int j: fe_values.dof_indices())
                     {
-                        const unsigned int j_component = fe.system_to_component_index(j).first;
+                        const unsigned int j_component = fe->system_to_component_index(j).first;
                         cell_matrix(i, j) += rho*((j_component == i_component)?
                                                   fe_values.shape_value(i, q_index)*
                                                   fe_values.shape_value(j, q_index)*
@@ -397,19 +406,15 @@ void implicit_beam<dim>::update_force()
     local_force = 0;
     J_vector = 0;
 
-    // choose quadrature rule
-    const QGauss<dim> quadrature_formula(fe.degree+1);
-    const QGauss<dim-1> quadrature_formula_face(fe.degree+1);
-
     // set up FEValues.
-    FEValues<dim> fe_values(fe,
-                            quadrature_formula,
+    FEValues<dim> fe_values(*fe,
+                            *quadrature_formula,
                             update_values | update_gradients | 
                             update_JxW_values);
 
     // set up FEFaceValues
-    FEFaceValues<dim> fe_face_values(fe,
-                                     quadrature_formula_face,
+    FEFaceValues<dim> fe_face_values(*fe,
+                                     *quadrature_formula_face,
                                      update_values | update_normal_vectors | 
                                      update_JxW_values);
 
@@ -418,7 +423,7 @@ void implicit_beam<dim>::update_force()
     std::vector<Tensor<2, dim>> qp_Grad_u;     
 
     // grab the dofs per cell, dim*nodes
-    const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
+    const unsigned int dofs_per_cell = fe->n_dofs_per_cell();
 
     // initialize local rhs
     Vector<double> cell_rhs(dofs_per_cell);
@@ -459,7 +464,7 @@ void implicit_beam<dim>::update_force()
                 // loop over dof indices
                 for(const unsigned int i: fe_values.dof_indices())
                 {
-                    const unsigned int i_component = fe.system_to_component_index(i).first; 
+                    const unsigned int i_component = fe->system_to_component_index(i).first; 
                     // internal force    
                     for(unsigned int k = 0; k < dim; ++k)
                     {
@@ -487,7 +492,7 @@ void implicit_beam<dim>::update_force()
                     {
                         for(const unsigned int i : fe_values.dof_indices())
                         {
-                            const unsigned int i_component = fe.system_to_component_index(i).first;
+                            const unsigned int i_component = fe->system_to_component_index(i).first;
                             cell_rhs(i) += pressure*
                                            pressure_vector[i_component]*
                                            fe_face_values.shape_value(i, f_q_index)*
@@ -590,12 +595,9 @@ void implicit_beam<dim>::assemble_system()
     constrained_system_matrix = 0;
     unconstrained_system_matrix = 0;
 
-    // choose quadrature rule
-    const QGauss<dim> quadrature_formula(fe.degree+1);
-
     // set up FEValues.
-    FEValues<dim> fe_values(fe,
-                            quadrature_formula,
+    FEValues<dim> fe_values(*fe,
+                            *quadrature_formula,
                             update_values | update_gradients | 
                             update_JxW_values);
 
@@ -604,7 +606,7 @@ void implicit_beam<dim>::assemble_system()
     std::vector<Tensor<2, dim>> qp_Grad_u;     
 
     // grab the dofs per cell, dim*nodes
-    const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
+    const unsigned int dofs_per_cell = fe->n_dofs_per_cell();
 
     // initialize local matrix and rhs
     FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
@@ -642,12 +644,12 @@ void implicit_beam<dim>::assemble_system()
                 for(const unsigned int i: fe_values.dof_indices())
                 {
                     // grad u dimension of dof i
-                    const unsigned int i_component = fe.system_to_component_index(i).first;
+                    const unsigned int i_component = fe->system_to_component_index(i).first;
                     // loop over dof indices
                     for(const unsigned int j: fe_values.dof_indices())
                     {
                         // grad u dimension of dof j
-                        const unsigned int j_component = fe.system_to_component_index(j).first;
+                        const unsigned int j_component = fe->system_to_component_index(j).first;
 
                         // mass matrix constribution
                         cell_matrix(i, j) += rho/beta/dt/dt*
@@ -743,7 +745,10 @@ void implicit_beam<dim>::output_results(const unsigned int& step)
 
     // build patches and write in parallel
     data_out.build_patches();
-    data_out.write_vtu_with_pvtu_record("./output/", "solution", step, mpi_comm, 4);
+    if(use_simplex)
+        data_out.write_vtu_with_pvtu_record("./simplex_output/", "solution", step, mpi_comm, 4);
+    else
+        data_out.write_vtu_with_pvtu_record("./output/", "solution", step, mpi_comm, 4);
 }
 
 // run function
@@ -819,9 +824,20 @@ int main(int argc, char** argv)
     parallel::shared::Triangulation<3> triangulation(mpi_communicator);
     make_triangulation(triangulation, n_global_refinements);   
  
-    // run the model
-    implicit_beam<3> implicit_test(mpi_communicator, 2, 5., triangulation);
+    // run the model using hexes
+    implicit_beam<3> implicit_test(triangulation,
+                                   2, 
+                                   5.);
     implicit_test.run();
+
+
+    // run the model with simplices
+    parallel::shared::Triangulation<3> simplex_triangulation(mpi_communicator);
+    GridGenerator::convert_hypercube_to_simplex_mesh(triangulation, simplex_triangulation);
+    implicit_beam<3> simplex_test(simplex_triangulation,
+                                  2,
+                                  5.);
+    simplex_test.run(); 
 
     return 0;
 }
