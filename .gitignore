@@ -1,0 +1,9 @@
+# Ignore everything not needed 
+*
+!*.in
+!CMakeLists.txt
+!*.cc
+!*.ipynb
+!*.PNG
+!.tex
+!.gitignore
