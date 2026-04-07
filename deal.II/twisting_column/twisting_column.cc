@@ -230,7 +230,7 @@ private:
   const double    rtol = 1.e-8; // residual norm tolerance for Newton's method
 
   // J storage
-  la::MPI::Vector J_vector;
+  Vector<double> J_vector;
 };
 
 // class constructor
@@ -294,9 +294,7 @@ ImplicitBeam<dim>::setup_system()
   constrained_residual.reinit(locally_owned_dofs, mpi_comm);
 
   // J storage
-  J_vector.reinit(mpi_comm,
-                  tria->n_global_active_cells(),
-                  tria->n_locally_owned_active_cells());
+  J_vector.reinit(tria->n_active_cells());
 
   // constrain lower z boundary to 0 displacement
   constraints.clear();
@@ -427,7 +425,7 @@ void
 ImplicitBeam<dim>::update_force()
 {
   local_force = 0;
-  // J_vector    = 0;
+  J_vector    = 0;
 
   // set up FEValues.
   FEValues<dim> fe_values(*fe,
@@ -496,7 +494,6 @@ ImplicitBeam<dim>::update_force()
         J_vector[cell->active_cell_index()] = new_volume / cell->measure();
       }
   local_force.compress(VectorOperation::add);
-  J_vector.compress(VectorOperation::insert);
   force = local_force;
 }
 
