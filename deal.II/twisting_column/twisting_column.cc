@@ -178,7 +178,11 @@ private:
   ConditionalOStream pcout;
 
   // mesh and finite elementparameters
+#if DEAL_II_VERSION_GTE(9, 7, 0)
+  ObserverPointer<const parallel::shared::Triangulation<dim>> tria;
+#else
   SmartPointer<const parallel::shared::Triangulation<dim>> tria;
+#endif
   bool                                                     use_simplex;
   unsigned int                                             fe_order;
   std::unique_ptr<FESystem<dim>>                           fe;
@@ -239,7 +243,11 @@ ImplicitBeam<dim>::ImplicitBeam(
   const parallel::shared::Triangulation<dim> &triangulation,
   const unsigned int                          fe_order,
   const double                                alpha)
+#if DEAL_II_VERSION_GTE(9, 7, 0)
+  : mpi_comm(triangulation.get_mpi_communicator())
+#else
   : mpi_comm(triangulation.get_communicator())
+#endif
   , pcout(std::cout, (Utilities::MPI::this_mpi_process(mpi_comm) == 0))
   , tria(&triangulation)
   , use_simplex(!triangulation.all_reference_cells_are_hyper_cube())
@@ -300,7 +308,11 @@ ImplicitBeam<dim>::setup_system()
 
   // constrain lower z boundary to 0 displacement
   constraints.clear();
+#if DEAL_II_VERSION_GTE(9, 6, 0)
+  constraints.reinit(locally_owned_dofs, locally_relevant_dofs);
+#else
   constraints.reinit(locally_relevant_dofs);
+#endif
   VectorTools::interpolate_boundary_values(dof_handler,
                                            4,
                                            Functions::ZeroFunction<dim>(dim),
@@ -507,7 +519,11 @@ ImplicitBeam<dim>::initialize_acceleration()
 {
   // sovler settings
   SolverControl solver_control(5000, 1e-15);
+#if DEAL_II_VERSION_GTE(9, 5, 0)
+  la::SolverCG  solver(solver_control);
+#else
   la::SolverCG  solver(solver_control, mpi_comm);
+#endif
 
   // preconditioner settings
   la::MPI::PreconditionAMG                 preconditioner;
@@ -692,7 +708,11 @@ ImplicitBeam<dim>::solve()
 {
   // intialize solver
   SolverControl   solver_control(5000, 1e-15);
+#if DEAL_II_VERSION_GTE(9, 5, 0)
+  la::SolverGMRES solver(solver_control);
+#else
   la::SolverGMRES solver(solver_control, mpi_comm);
+#endif
 
   // preconditioner settings
   la::MPI::PreconditionJacobi                 preconditioner;
