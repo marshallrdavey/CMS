@@ -1,23 +1,29 @@
 #include <deal.II/base/conditional_ostream.h>
 #include <deal.II/base/index_set.h>
 #include <deal.II/base/numbers.h>
+#include <deal.II/base/parameter_handler.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/smartpointer.h>
 #include <deal.II/base/symmetric_tensor.h>
 #include <deal.II/base/tensor.h>
 #include <deal.II/base/utilities.h>
+
 #include <deal.II/distributed/shared_tria.h>
+
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/dofs/dof_tools.h>
+
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_simplex_p.h>
 #include <deal.II/fe/fe_system.h>
 #include <deal.II/fe/fe_values.h>
+
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/grid_out.h>
 #include <deal.II/grid/grid_refinement.h>
 #include <deal.II/grid/grid_tools.h>
 #include <deal.II/grid/tria.h>
+
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/constrained_linear_operator.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
@@ -29,13 +35,16 @@
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/sparsity_tools.h>
 #include <deal.II/lac/vector.h>
+
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/error_estimator.h>
 #include <deal.II/numerics/vector_tools.h>
+
 #include <deal.II/physics/elasticity/kinematics.h>
-#include <fstream>
 
 #include <math.h>
+
+#include <filesystem>
 
 using namespace dealii;
 
@@ -43,6 +52,35 @@ using namespace dealii;
 namespace la
 {
   using namespace LinearAlgebraPETSc;
+}
+
+void
+declare_parameters(ParameterHandler &prm)
+{
+  prm.declare_entry("ALPHA",
+                    "4.0e6",
+                    Patterns::Double(),
+                    "Modified neo-Hookean prameter.");
+  prm.declare_entry("KAPPA", "0.0", Patterns::Double(), "Bulk modulus.");
+  prm.declare_entry("RHO", "1.0", Patterns::Double(), "Density.");
+  prm.declare_entry("BETA",
+                    "0.25",
+                    Patterns::Double(),
+                    "Newmark-beta beta parameter.");
+  prm.declare_entry("GAMMA",
+                    "0.5",
+                    Patterns::Double(),
+                    "Newmark-beta gamma parameter.");
+  prm.declare_entry("DT", "1.0e-5", Patterns::Double(), "Time step size.");
+  prm.declare_entry("END_TIME", "1.0", Patterns::Double(), "End time.");
+  prm.declare_entry("OUTPUT_FREQUENCY",
+                    "1",
+                    Patterns::Integer(),
+                    "Frequency of output writing.");
+  prm.declare_entry("OUTPUT_DIRECTORY",
+                    ".",
+                    Patterns::Anything(),
+                    "Output file path.");
 }
 
 // Generate beam
@@ -77,15 +115,18 @@ I_1(const Tensor<2, dim> &FF)
 }
 
 // PK1_stress from the deformation gradient, dW/dFF
-// Modified neoHookean model
+// W_DEV Modified neoHookean model
+// W_DIL k / 2 (J - 1)^2
 template <int dim>
 inline Tensor<2, dim>
 PK1_stress(const Tensor<2, dim> &FF,
            const double          I1,
            const double          J,
-           const double          alpha)
+           const double          alpha,
+           const double          kappa)
 {
-  return alpha / cbrt(J * J) * (FF - I1 * transpose(invert(FF)) / 3.0);
+  return alpha / cbrt(J * J) * (FF - I1 * transpose(invert(FF)) / 3.0) +
+         kappa * (J * J - J) * transpose(invert(FF));
 }
 
 // script_A from the deformation gradient, d^2W/dFF^2
@@ -94,7 +135,8 @@ Tensor<4, dim>
 script_A(const Tensor<2, dim> &FF,
          const double          I1,
          const double          J,
-         const double          alpha)
+         const double          alpha,
+         const double          kappa)
 {
   Tensor<4, dim>       A;
   const Tensor<2, dim> FF_inv = invert(FF);
@@ -104,10 +146,13 @@ script_A(const Tensor<2, dim> &FF,
         for (unsigned int l = 0; l < dim; ++l)
           A[i][j][k][l] =
             alpha / cbrt(J * J) *
-            (2. / 9. * I1 * FF_inv[j][i] * FF_inv[l][k] -
-             2. / 3. * FF[i][j] * FF_inv[l][k] + delta(i, k) * delta(j, l) -
-             2. / 3. * FF[k][l] * FF_inv[j][i] +
-             I1 / 3. * FF_inv[j][k] * FF_inv[l][i]);
+              (2.0 / 9.0 * I1 * FF_inv[j][i] * FF_inv[l][k] -
+               2.0 / 3.0 * FF[i][j] * FF_inv[l][k] + delta(i, k) * delta(j, l) -
+               2.0 / 3.0 * FF[k][l] * FF_inv[j][i] +
+               I1 / 3.0 * FF_inv[j][k] * FF_inv[l][i]) +
+            kappa * J *
+              ((2.0 * J - 1.0) * FF_inv[j][i] * FF_inv[l][k] -
+               (J - 1.0) * FF_inv[j][k] * FF_inv[l][i]);
   return A;
 }
 
@@ -145,7 +190,7 @@ class ImplicitBeam
 public:
   ImplicitBeam(const parallel::shared::Triangulation<dim> &triangulation,
                const unsigned int                          fe_order,
-               const double                                alpha);
+               const ParameterHandler                     &prm);
 
   void
   run();
@@ -183,28 +228,33 @@ private:
 #else
   SmartPointer<const parallel::shared::Triangulation<dim>> tria;
 #endif
-  bool                                                     use_simplex;
-  unsigned int                                             fe_order;
-  std::unique_ptr<FESystem<dim>>                           fe;
-  std::unique_ptr<Quadrature<dim>>                         quadrature_formula;
+  bool                                 use_simplex;
+  unsigned int                         fe_order;
+  std::unique_ptr<FESystem<dim>>       fe;
+  std::unique_ptr<Quadrature<dim>>     quadrature_formula;
   std::unique_ptr<Quadrature<dim - 1>> quadrature_formula_face;
   DoFHandler<dim>                      dof_handler;
   IndexSet                             locally_owned_dofs;
   IndexSet                             locally_relevant_dofs;
 
   // functions for mechanics
-  double       m_alpha;
-  const double kappa = 1.0;
-  const double rho   = 1.1;
+  double m_alpha;
+  double m_kappa;
+  double m_rho;
 
   // numerical parameters
-  const double beta  = 0.25;
-  const double gamma = 0.5;
+  double       m_beta;
+  double       m_gamma;
+  const double m_atol = 1.e-8;
 
-  // time
-  const double dt       = 1.0e-5;
-  const double end_time = 0.04;
-  double       time;
+  // time parameters
+  double m_dt;
+  double m_end_time;
+  double m_time;
+
+  // output parameters
+  unsigned int m_output_frequency;
+  std::string  m_output_directory;
 
   // constraints
   AffineConstraints<double> constraints;
@@ -231,7 +281,6 @@ private:
   la::MPI::Vector residual; // residual
   la::MPI::Vector local_residual;
   la::MPI::Vector constrained_residual; // constrained residual, system rhs
-  const double    rtol = 1.e-8; // residual norm tolerance for Newton's method
 
   // J storage
   Vector<double> J_vector;
@@ -242,7 +291,7 @@ template <int dim>
 ImplicitBeam<dim>::ImplicitBeam(
   const parallel::shared::Triangulation<dim> &triangulation,
   const unsigned int                          fe_order,
-  const double                                alpha)
+  const ParameterHandler                     &prm)
 #if DEAL_II_VERSION_GTE(9, 7, 0)
   : mpi_comm(triangulation.get_mpi_communicator())
 #else
@@ -253,7 +302,15 @@ ImplicitBeam<dim>::ImplicitBeam(
   , use_simplex(!triangulation.all_reference_cells_are_hyper_cube())
   , fe_order(fe_order)
   , dof_handler(triangulation)
-  , m_alpha(alpha)
+  , m_alpha(prm.get_double("ALPHA"))
+  , m_kappa(prm.get_double("KAPPA"))
+  , m_rho(prm.get_double("RHO"))
+  , m_beta(prm.get_double("BETA"))
+  , m_gamma(prm.get_double("GAMMA"))
+  , m_dt(prm.get_double("DT"))
+  , m_end_time(prm.get_double("END_TIME"))
+  , m_output_frequency((unsigned int)prm.get_integer("OUTPUT_FREQUENCY"))
+  , m_output_directory(prm.get("OUTPUT_DIRECTORY") + '/')
 {
   if (use_simplex)
     {
@@ -400,11 +457,11 @@ ImplicitBeam<dim>::assemble_mass_matrix()
                       const unsigned int j_component =
                         fe->system_to_component_index(j).first;
                       cell_matrix(i, j) +=
-                        rho * ((j_component == i_component) ?
-                                 fe_values.shape_value(i, q_index) *
-                                   fe_values.shape_value(j, q_index) *
-                                   fe_values.JxW(q_index) :
-                                 0.0);
+                        m_rho * ((j_component == i_component) ?
+                                   fe_values.shape_value(i, q_index) *
+                                     fe_values.shape_value(j, q_index) *
+                                     fe_values.JxW(q_index) :
+                                   0.0);
                     }
                 }
             }
@@ -485,7 +542,7 @@ ImplicitBeam<dim>::update_force()
             const double J = determinant(FF);
             new_volume += J * fe_values.JxW(q_index);
             // PK1 stress, PP
-            const Tensor<2, dim> PP = PK1_stress(FF, I1, J, m_alpha);
+            const Tensor<2, dim> PP = PK1_stress(FF, I1, J, m_alpha, m_kappa);
 
             // loop over dof indices
             for (const unsigned int i : fe_values.dof_indices())
@@ -517,9 +574,9 @@ ImplicitBeam<dim>::initialize_acceleration()
   // sovler settings
   SolverControl solver_control(5000, 1e-15);
 #if DEAL_II_VERSION_GTE(9, 5, 0)
-  la::SolverCG  solver(solver_control);
+  la::SolverCG solver(solver_control);
 #else
-  la::SolverCG  solver(solver_control, mpi_comm);
+  la::SolverCG solver(solver_control, mpi_comm);
 #endif
 
   // preconditioner settings
@@ -554,14 +611,14 @@ ImplicitBeam<dim>::intermediate_step()
   // intermediate displacement
   displacement_tilde = 0;
   displacement_tilde.add(1.0, local_displacement);
-  displacement_tilde.add(dt, local_velocity);
-  displacement_tilde.add(dt * dt * (1.0 - 2.0 * beta) / 2.0,
+  displacement_tilde.add(m_dt, local_velocity);
+  displacement_tilde.add(m_dt * m_dt * (1.0 - 2.0 * m_beta) / 2.0,
                          local_acceleration);
 
   // intermediate velocity
   velocity_tilde = 0;
   velocity_tilde.add(1.0, local_velocity);
-  velocity_tilde.add(dt * (1.0 - gamma), local_acceleration);
+  velocity_tilde.add(m_dt * (1.0 - m_gamma), local_acceleration);
 }
 
 // update velocity, acceleration, and the residual
@@ -571,13 +628,13 @@ ImplicitBeam<dim>::update_step()
 {
   // update acceleration
   local_acceleration = 0;
-  local_acceleration.add(1.0 / beta / dt / dt, local_displacement);
-  local_acceleration.add(-1.0 / beta / dt / dt, displacement_tilde);
+  local_acceleration.add(1.0 / m_beta / m_dt / m_dt, local_displacement);
+  local_acceleration.add(-1.0 / m_beta / m_dt / m_dt, displacement_tilde);
 
   // update velocity
   local_velocity = 0;
   local_velocity.add(1.0, velocity_tilde);
-  local_velocity.add(gamma * dt, local_acceleration);
+  local_velocity.add(m_gamma * m_dt, local_acceleration);
 
   // update the residual
   local_residual = 0;
@@ -649,7 +706,7 @@ ImplicitBeam<dim>::assemble_system()
               // volume change, J
               const double J = determinant(FF);
               // d^2W/dFF^2
-              const Tensor<4, dim> AA = script_A(FF, I1, J, m_alpha);
+              const Tensor<4, dim> AA = script_A(FF, I1, J, m_alpha, m_kappa);
 
               // loop over dof indices
               for (const unsigned int i : fe_values.dof_indices())
@@ -666,7 +723,7 @@ ImplicitBeam<dim>::assemble_system()
 
                       // mass matrix constribution
                       cell_matrix(i, j) +=
-                        rho / beta / dt / dt *
+                        m_rho / m_beta / m_dt / m_dt *
                         ((j_component == i_component) ?
                            fe_values.shape_value(i, q_index) *
                              fe_values.shape_value(j, q_index) *
@@ -704,7 +761,7 @@ void
 ImplicitBeam<dim>::solve()
 {
   // intialize solver
-  SolverControl   solver_control(5000, 1e-15);
+  SolverControl solver_control(10000, 1.0e-16);
 #if DEAL_II_VERSION_GTE(9, 5, 0)
   la::SolverGMRES solver(solver_control);
 #else
@@ -765,7 +822,7 @@ ImplicitBeam<dim>::output_results(const unsigned int &step)
   data_out.add_data_vector(J_vector, "J");
 
   // correlate time to time step
-  data_out.set_flags(DataOutBase::VtkFlags(time, step));
+  data_out.set_flags(DataOutBase::VtkFlags(m_time, step));
 
   // build patches and write in parallel
   data_out.build_patches();
@@ -774,7 +831,7 @@ ImplicitBeam<dim>::output_results(const unsigned int &step)
       "./simplex_output/", "solution", step, mpi_comm, 4);
   else
     data_out.write_vtu_with_pvtu_record(
-      "./output/", "solution", step, mpi_comm, 4);
+      m_output_directory, "solution", step, mpi_comm, 4);
 }
 
 // run function
@@ -794,7 +851,7 @@ ImplicitBeam<dim>::run()
   assemble_mass_matrix();
 
   // initialize problem
-  time                  = 0.0;
+  m_time                = 0.0;
   unsigned int step     = 0;
   unsigned int out_step = 0;
   initialize_velocity();
@@ -805,24 +862,24 @@ ImplicitBeam<dim>::run()
   output_results(out_step);
 
   // main time loop
-  while (time < end_time - dt / 2.)
+  while (m_time < m_end_time - m_dt / 2.)
     {
       ++step;
-      time += dt;
+      m_time += m_dt;
       update_force();
       assemble_system();
       intermediate_step();
       update_step();
 
-      pcout << " Time = " << time << "\n";
+      pcout << " Time = " << m_time << "\n";
       pcout << "   Initial residual at time step " << step << ": "
             << constrained_residual.l2_norm() << "\n";
 
       unsigned int count   = 0;
       double       rel_tol = 100;
 
-      while (count < 10 && constrained_residual.l2_norm() > rtol &&
-             rel_tol > 1.0)
+      while (count < 20 && constrained_residual.l2_norm() > m_atol &&
+             rel_tol > 1.09)
         {
           rel_tol = constrained_residual.l2_norm();
           solve();
@@ -841,7 +898,7 @@ ImplicitBeam<dim>::run()
       pcout << "   Final residual at time step " << step << ": "
             << constrained_residual.l2_norm() << "\n\n";
 
-      if (step % 50 == 0)
+      if (step % m_output_frequency == 0)
         output_results(++out_step);
     }
 }
@@ -853,13 +910,34 @@ main(int argc, char **argv)
   Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
   MPI_Comm                         mpi_communicator = MPI_COMM_WORLD;
 
-  // make triangulation
+  // Set up input parameters
+  ParameterHandler prm;
+  declare_parameters(prm);
+
+  // Allow for users to pass in an input file from the command line. Default to
+  // a local file named twisting_column.prm.
+  if (argc > 1)
+    prm.parse_input(argv[1]);
+  else
+    prm.parse_input("twisting_column.prm");
+
+  // Create the output directory from the OUTPUT_DIRECTORY parameter.
+  try
+    {
+      std::filesystem::create_directories(prm.get("OUTPUT_DIRECTORY"));
+    }
+  catch (const std::filesystem::filesystem_error &e)
+    {
+      std::cerr << "Directory creation error: " << e.what() << '\n';
+    }
+
+  // Make triangulation
   const int                          n_global_refinements = 2;
   parallel::shared::Triangulation<3> triangulation(mpi_communicator);
   make_triangulation(triangulation, n_global_refinements);
 
-  // run the model using hexes
-  ImplicitBeam<3> implicit_test(triangulation, 2, 4.0e6);
+  // Run the model using hexes
+  ImplicitBeam<3> implicit_test(triangulation, 2, prm);
   implicit_test.run();
 
   return 0;
