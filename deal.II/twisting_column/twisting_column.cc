@@ -48,12 +48,13 @@
 
 using namespace dealii;
 
-// define PETSc namespace for brevity
+// Define PETSc namespace for brevity
 namespace la
 {
   using namespace LinearAlgebraPETSc;
 }
 
+// Define requisite parameters
 void
 declare_parameters(ParameterHandler &prm)
 {
@@ -85,7 +86,7 @@ declare_parameters(ParameterHandler &prm)
 
 // Generate beam
 // 2x2x12 (cm)
-// cell size: 0.25^3 (cm)
+// Cell size: 0.25^3 (cm)
 template <int dim>
 void
 make_triangulation(parallel::shared::Triangulation<dim> &triangulation,
@@ -115,8 +116,8 @@ I_1(const Tensor<2, dim> &FF)
 }
 
 // PK1_stress from the deformation gradient, dW/dFF
-// W_DEV Modified neoHookean model
-// W_DIL k / 2 (J - 1)^2
+// W_DEV: Modified neoHookean model, alpha / 2 * (I1_bar - 3)
+// W_DIL: kappa / 2 * (J - 1)^2
 template <int dim>
 inline Tensor<2, dim>
 PK1_stress(const Tensor<2, dim> &FF,
@@ -129,7 +130,7 @@ PK1_stress(const Tensor<2, dim> &FF,
          kappa * (J * J - J) * transpose(invert(FF));
 }
 
-// script_A from the deformation gradient, d^2W/dFF^2
+// Jacobian of the PK1 stress, d^2W/dFF^2
 template <int dim>
 Tensor<4, dim>
 script_A(const Tensor<2, dim> &FF,
@@ -156,6 +157,7 @@ script_A(const Tensor<2, dim> &FF,
   return A;
 }
 
+// Initial velocity values
 template <int dim>
 class InitialVelocity : public Function<dim>
 {
@@ -183,7 +185,7 @@ public:
   }
 };
 
-// class declaration
+// Implicit solver class
 template <int dim>
 class ImplicitBeam
 {
@@ -196,7 +198,7 @@ public:
   run();
 
 private:
-  // class functions
+  // Class functions
   void
   setup_system();
   void
@@ -222,7 +224,7 @@ private:
   MPI_Comm           mpi_comm;
   ConditionalOStream pcout;
 
-  // mesh and finite elementparameters
+  // Mesh and finite element objects
 #if DEAL_II_VERSION_GTE(9, 7, 0)
   ObserverPointer<const parallel::shared::Triangulation<dim>> tria;
 #else
@@ -237,56 +239,60 @@ private:
   IndexSet                             locally_owned_dofs;
   IndexSet                             locally_relevant_dofs;
 
-  // functions for mechanics
+  // Mechanics parameters
   double m_alpha;
   double m_kappa;
   double m_rho;
 
-  // numerical parameters
+  // Numerical parameters
   double       m_beta;
   double       m_gamma;
   const double m_atol = 1.e-8;
 
-  // time parameters
+  // Time parameters
   double m_dt;
   double m_end_time;
   double m_time;
 
-  // output parameters
+  // Output parameters
   unsigned int m_output_frequency;
   std::string  m_output_directory;
 
-  // constraints
+  // Constraints
   AffineConstraints<double> constraints;
 
-  // matrix assembly
+  // Matrices
   la::MPI::SparseMatrix constrained_mass_matrix;
   la::MPI::SparseMatrix unconstrained_mass_matrix;
   la::MPI::SparseMatrix constrained_system_matrix;
   la::MPI::SparseMatrix unconstrained_system_matrix;
 
-  // solution vectors
-  la::MPI::Vector displacement; // total displacement
+  // Solution vectors
+  la::MPI::Vector displacement;
   la::MPI::Vector local_displacement;
-  la::MPI::Vector displacement_tilde; // intermediate displacement
-  la::MPI::Vector velocity;           // current velocity
-  la::MPI::Vector local_velocity;
-  la::MPI::Vector velocity_tilde; // intermediate velocity
-  la::MPI::Vector acceleration;   // current acceleration
-  la::MPI::Vector local_acceleration;
-  la::MPI::Vector force; // current internal and external force
-  la::MPI::Vector local_force;
-  la::MPI::Vector
-    newton_update;          // displacement update from the newton iteration
-  la::MPI::Vector residual; // residual
-  la::MPI::Vector local_residual;
-  la::MPI::Vector constrained_residual; // constrained residual, system rhs
+  la::MPI::Vector displacement_tilde;
 
-  // J storage
+  la::MPI::Vector velocity;
+  la::MPI::Vector local_velocity;
+  la::MPI::Vector velocity_tilde;
+
+  la::MPI::Vector acceleration;
+  la::MPI::Vector local_acceleration;
+
+  la::MPI::Vector force;
+  la::MPI::Vector local_force;
+
+  la::MPI::Vector newton_update;
+
+  la::MPI::Vector residual;
+  la::MPI::Vector local_residual;
+  la::MPI::Vector constrained_residual;
+
+  // Cell-wise J storage for output
   Vector<double> J_vector;
 };
 
-// class constructor
+// Class constructor
 template <int dim>
 ImplicitBeam<dim>::ImplicitBeam(
   const parallel::shared::Triangulation<dim> &triangulation,
@@ -327,7 +333,7 @@ ImplicitBeam<dim>::ImplicitBeam(
     }
 }
 
-// dof handler stuff
+// Initialize vectors, matrices, and constraints
 template <int dim>
 void
 ImplicitBeam<dim>::setup_system()
@@ -358,10 +364,9 @@ ImplicitBeam<dim>::setup_system()
   local_residual.reinit(locally_owned_dofs, mpi_comm);
   constrained_residual.reinit(locally_owned_dofs, mpi_comm);
 
-  // J storage
   J_vector.reinit(tria->n_active_cells());
 
-  // constrain lower z boundary to 0 displacement
+  // Constrain lower z boundary to 0 displacement
   constraints.clear();
 #if DEAL_II_VERSION_GTE(9, 6, 0)
   constraints.reinit(locally_owned_dofs, locally_relevant_dofs);
@@ -374,12 +379,12 @@ ImplicitBeam<dim>::setup_system()
                                            constraints);
   constraints.close();
 
-  // constrained matrix generation
+  // Constrained matrix generation
   DynamicSparsityPattern constrained_dsp(locally_relevant_dofs);
   DoFTools::make_sparsity_pattern(dof_handler,
                                   constrained_dsp,
                                   constraints,
-                                  false); //  keep constrained dofs
+                                  false);
   SparsityTools::distribute_sparsity_pattern(constrained_dsp,
                                              locally_owned_dofs,
                                              mpi_comm,
@@ -393,7 +398,7 @@ ImplicitBeam<dim>::setup_system()
                                    constrained_dsp,
                                    mpi_comm);
 
-  // unconstrained mass matrix
+  // Unconstrained mass matrix
   DynamicSparsityPattern unconstrained_dsp(locally_relevant_dofs);
   DoFTools::make_sparsity_pattern(dof_handler, unconstrained_dsp);
   SparsityTools::distribute_sparsity_pattern(unconstrained_dsp,
@@ -410,7 +415,7 @@ ImplicitBeam<dim>::setup_system()
                                      mpi_comm);
 }
 
-// assemble the mass matrix, does not change over time
+// Assemble the mass matrix, does not change over time
 template <int dim>
 void
 ImplicitBeam<dim>::assemble_mass_matrix()
@@ -418,65 +423,51 @@ ImplicitBeam<dim>::assemble_mass_matrix()
   constrained_mass_matrix   = 0;
   unconstrained_mass_matrix = 0;
 
-  // set up FEValues.
   FEValues<dim> fe_values(*fe,
                           *quadrature_formula,
                           update_values | update_JxW_values);
 
-  // grab the dofs per cell, dim*nodes
   const unsigned int dofs_per_cell = fe->n_dofs_per_cell();
 
-  // initialize local matrix
   FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
 
-  // dof vector for global indices
   std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
 
-  // loop over cells
   for (const auto &cell : dof_handler.active_cell_iterators())
-    {
-      if (cell->is_locally_owned())
-        {
-          cell_matrix = 0;
+    if (cell->is_locally_owned())
+      {
+        cell_matrix = 0;
 
-          fe_values.reinit(cell);
+        fe_values.reinit(cell);
 
-          // loop over quadrature points
-          for (const unsigned int q_index :
-               fe_values.quadrature_point_indices())
+        for (const unsigned int q_index : fe_values.quadrature_point_indices())
+          for (const unsigned int i : fe_values.dof_indices())
             {
-              // assemble dim-dimensional mass matrix
-              // loop over dof indices
-              for (const unsigned int i : fe_values.dof_indices())
+              const unsigned int i_component =
+                fe->system_to_component_index(i).first;
+              for (const unsigned int j : fe_values.dof_indices())
                 {
-                  const unsigned int i_component =
-                    fe->system_to_component_index(i).first;
-                  // loop over dof indices
-                  for (const unsigned int j : fe_values.dof_indices())
-                    {
-                      const unsigned int j_component =
-                        fe->system_to_component_index(j).first;
-                      cell_matrix(i, j) +=
-                        m_rho * ((j_component == i_component) ?
-                                   fe_values.shape_value(i, q_index) *
-                                     fe_values.shape_value(j, q_index) *
-                                     fe_values.JxW(q_index) :
-                                   0.0);
-                    }
+                  const unsigned int j_component =
+                    fe->system_to_component_index(j).first;
+                  cell_matrix(i, j) +=
+                    m_rho * ((j_component == i_component) ?
+                               fe_values.shape_value(i, q_index) *
+                                 fe_values.shape_value(j, q_index) *
+                                 fe_values.JxW(q_index) :
+                               0.0);
                 }
             }
-          cell->get_dof_indices(local_dof_indices);
-          constraints.distribute_local_to_global(cell_matrix,
-                                                 local_dof_indices,
-                                                 constrained_mass_matrix);
-          unconstrained_mass_matrix.add(local_dof_indices, cell_matrix);
-        }
-    }
+        cell->get_dof_indices(local_dof_indices);
+        constraints.distribute_local_to_global(cell_matrix,
+                                               local_dof_indices,
+                                               constrained_mass_matrix);
+        unconstrained_mass_matrix.add(local_dof_indices, cell_matrix);
+      }
   constrained_mass_matrix.compress(VectorOperation::add);
   unconstrained_mass_matrix.compress(VectorOperation::add);
 }
 
-// initialize the velocity
+// Initialize the velocity
 template <int dim>
 void
 ImplicitBeam<dim>::initialize_velocity()
@@ -488,7 +479,7 @@ ImplicitBeam<dim>::initialize_velocity()
                        local_velocity);
 }
 
-// update the force vector
+// Update the force vector, compute J
 template <int dim>
 void
 ImplicitBeam<dim>::update_force()
@@ -496,28 +487,21 @@ ImplicitBeam<dim>::update_force()
   local_force = 0;
   J_vector    = 0;
 
-  // set up FEValues.
   FEValues<dim> fe_values(*fe,
                           *quadrature_formula,
                           update_values | update_gradients | update_JxW_values);
 
-  // extractor for the displacement values
   FEValuesExtractors::Vector  u_fe(0);
   std::vector<Tensor<2, dim>> qp_Grad_u;
 
-  // grab the dofs per cell, dim*nodes
   const unsigned int dofs_per_cell = fe->n_dofs_per_cell();
 
-  // initialize local rhs
   Vector<double> cell_rhs(dofs_per_cell);
 
-  // dof vector for global indices
   std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
 
-  // J value stuff
   double new_volume;
 
-  // loop over cells
   for (const auto &cell : dof_handler.active_cell_iterators())
     if (cell->is_locally_owned())
       {
@@ -530,26 +514,22 @@ ImplicitBeam<dim>::update_force()
         qp_Grad_u.resize(n_q_points);
         fe_values[u_fe].get_function_gradients(displacement, qp_Grad_u);
 
-        // loop over quadrature points
         for (const unsigned int q_index : fe_values.quadrature_point_indices())
           {
-            // deformation gradient, FF
             const Tensor<2, dim> FF =
               Physics::Elasticity::Kinematics::F(qp_Grad_u[q_index]);
-            // first invariant, I1
+
             const double I1 = I_1(FF);
-            // volume change, J
+
             const double J = determinant(FF);
             new_volume += J * fe_values.JxW(q_index);
-            // PK1 stress, PP
+
             const Tensor<2, dim> PP = PK1_stress(FF, I1, J, m_alpha, m_kappa);
 
-            // loop over dof indices
             for (const unsigned int i : fe_values.dof_indices())
               {
                 const unsigned int i_component =
                   fe->system_to_component_index(i).first;
-                // internal force
                 for (unsigned int k = 0; k < dim; ++k)
                   {
                     cell_rhs(i) -= PP[i_component][k] *
@@ -566,26 +546,26 @@ ImplicitBeam<dim>::update_force()
   force = local_force;
 }
 
-// initialize acceleration, M a = f
+// Initialize acceleration, M a = f
 template <int dim>
 void
 ImplicitBeam<dim>::initialize_acceleration()
 {
-  // sovler settings
-  SolverControl solver_control(5000, 1e-15);
+  // Sovler settings
+  SolverControl solver_control(10000, 1e-16);
 #if DEAL_II_VERSION_GTE(9, 5, 0)
   la::SolverCG solver(solver_control);
 #else
   la::SolverCG solver(solver_control, mpi_comm);
 #endif
 
-  // preconditioner settings
+  // Preconditioner settings
   la::MPI::PreconditionAMG                 preconditioner;
   la::MPI::PreconditionAMG::AdditionalData data;
   data.symmetric_operator = true;
   preconditioner.initialize(constrained_mass_matrix, data);
 
-  // constrain the force
+  // Constrain the force
   auto force_system_operator =
     linear_operator<la::MPI::Vector>(unconstrained_mass_matrix);
   auto setup_constrained_force =
@@ -595,54 +575,54 @@ ImplicitBeam<dim>::initialize_acceleration()
   la::MPI::Vector force_rhs(locally_owned_dofs, mpi_comm);
   setup_constrained_force.apply(force_rhs);
 
+  // Solve
   solver.solve(constrained_mass_matrix,
                local_acceleration,
                force_rhs,
                preconditioner);
-
   constraints.distribute(local_acceleration);
 }
 
-// compute velocity_tilde and displacement_tilde
+// Compute velocity_tilde and displacement_tilde
 template <int dim>
 void
 ImplicitBeam<dim>::intermediate_step()
 {
-  // intermediate displacement
+  // Intermediate displacement
   displacement_tilde = 0;
   displacement_tilde.add(1.0, local_displacement);
   displacement_tilde.add(m_dt, local_velocity);
   displacement_tilde.add(m_dt * m_dt * (1.0 - 2.0 * m_beta) / 2.0,
                          local_acceleration);
 
-  // intermediate velocity
+  // Intermediate velocity
   velocity_tilde = 0;
   velocity_tilde.add(1.0, local_velocity);
   velocity_tilde.add(m_dt * (1.0 - m_gamma), local_acceleration);
 }
 
-// update velocity, acceleration, and the residual
+// Update velocity, acceleration, and the residual
 template <int dim>
 void
 ImplicitBeam<dim>::update_step()
 {
-  // update acceleration
+  // Update acceleration
   local_acceleration = 0;
   local_acceleration.add(1.0 / m_beta / m_dt / m_dt, local_displacement);
   local_acceleration.add(-1.0 / m_beta / m_dt / m_dt, displacement_tilde);
 
-  // update velocity
+  // Update velocity
   local_velocity = 0;
   local_velocity.add(1.0, velocity_tilde);
   local_velocity.add(m_gamma * m_dt, local_acceleration);
 
-  // update the residual
+  // Update the residual
   local_residual = 0;
   local_residual.add(1.0, local_force);
   const la::MPI::Vector negative_acceleration(-1.0 * local_acceleration);
   unconstrained_mass_matrix.vmult_add(local_residual, negative_acceleration);
 
-  // constrain residual
+  // Constrain the residual
   constrained_residual = 0;
   residual             = local_residual;
   auto residual_system_operator =
@@ -654,7 +634,7 @@ ImplicitBeam<dim>::update_step()
   setup_constrained_residual.apply(constrained_residual);
 }
 
-// matrix assembly
+// Assembly for Newton solves
 template <int dim>
 void
 ImplicitBeam<dim>::assemble_system()
@@ -662,105 +642,86 @@ ImplicitBeam<dim>::assemble_system()
   constrained_system_matrix   = 0;
   unconstrained_system_matrix = 0;
 
-  // set up FEValues.
   FEValues<dim> fe_values(*fe,
                           *quadrature_formula,
                           update_values | update_gradients | update_JxW_values);
 
-  // extractor for the displacement values
   FEValuesExtractors::Vector  u_fe(0);
   std::vector<Tensor<2, dim>> qp_Grad_u;
 
-  // grab the dofs per cell, dim*nodes
   const unsigned int dofs_per_cell = fe->n_dofs_per_cell();
 
-  // initialize local matrix and rhs
   FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
   Vector<double>     cell_rhs(dofs_per_cell);
 
-  // dof vector for global indices
   std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
 
-  // loop over cells
   for (const auto &cell : dof_handler.active_cell_iterators())
-    {
-      if (cell->is_locally_owned())
-        {
-          cell_matrix = 0;
+    if (cell->is_locally_owned())
+      {
+        cell_matrix = 0;
 
-          fe_values.reinit(cell);
+        fe_values.reinit(cell);
 
-          const unsigned int n_q_points = fe_values.get_quadrature().size();
-          qp_Grad_u.resize(n_q_points);
-          fe_values[u_fe].get_function_gradients(displacement, qp_Grad_u);
+        const unsigned int n_q_points = fe_values.get_quadrature().size();
+        qp_Grad_u.resize(n_q_points);
+        fe_values[u_fe].get_function_gradients(displacement, qp_Grad_u);
 
-          // loop over quadrature points
-          for (const unsigned int q_index :
-               fe_values.quadrature_point_indices())
-            {
-              // deformation gradient, FF
-              const Tensor<2, dim> FF =
-                Physics::Elasticity::Kinematics::F(qp_Grad_u[q_index]);
-              // first invariant, I1
-              const double I1 = I_1(FF);
-              // volume change, J
-              const double J = determinant(FF);
-              // d^2W/dFF^2
-              const Tensor<4, dim> AA = script_A(FF, I1, J, m_alpha, m_kappa);
+        for (const unsigned int q_index : fe_values.quadrature_point_indices())
+          {
+            const Tensor<2, dim> FF =
+              Physics::Elasticity::Kinematics::F(qp_Grad_u[q_index]);
 
-              // loop over dof indices
-              for (const unsigned int i : fe_values.dof_indices())
-                {
-                  // grad u dimension of dof i
-                  const unsigned int i_component =
-                    fe->system_to_component_index(i).first;
-                  // loop over dof indices
-                  for (const unsigned int j : fe_values.dof_indices())
-                    {
-                      // grad u dimension of dof j
-                      const unsigned int j_component =
-                        fe->system_to_component_index(j).first;
+            const double I1 = I_1(FF);
 
-                      // mass matrix constribution
-                      cell_matrix(i, j) +=
-                        m_rho / m_beta / m_dt / m_dt *
-                        ((j_component == i_component) ?
-                           fe_values.shape_value(i, q_index) *
-                             fe_values.shape_value(j, q_index) *
-                             fe_values.JxW(q_index) :
-                           0.0);
-                      // loop over dimensions for tangent stiffness matrix
-                      for (unsigned int k = 0; k < dim; ++k)
+            const double J = determinant(FF);
+
+            const Tensor<4, dim> AA = script_A(FF, I1, J, m_alpha, m_kappa);
+
+            for (const unsigned int i : fe_values.dof_indices())
+              {
+                const unsigned int i_component =
+                  fe->system_to_component_index(i).first;
+                for (const unsigned int j : fe_values.dof_indices())
+                  {
+                    const unsigned int j_component =
+                      fe->system_to_component_index(j).first;
+
+                    cell_matrix(i, j) +=
+                      m_rho / m_beta / m_dt / m_dt *
+                      ((j_component == i_component) ?
+                         fe_values.shape_value(i, q_index) *
+                           fe_values.shape_value(j, q_index) *
+                           fe_values.JxW(q_index) :
+                         0.0);
+                    for (unsigned int k = 0; k < dim; ++k)
+                      for (unsigned int l = 0; l < dim; ++l)
                         {
-                          for (unsigned int l = 0; l < dim; ++l)
-                            {
-                              cell_matrix(i, j) +=
-                                AA[i_component][k][j_component][l] *
-                                fe_values.shape_grad(i, q_index)[k] *
-                                fe_values.shape_grad(j, q_index)[l] *
-                                fe_values.JxW(q_index);
-                            }
+                          cell_matrix(i, j) +=
+                            AA[i_component][k][j_component][l] *
+                            fe_values.shape_grad(i, q_index)[k] *
+                            fe_values.shape_grad(j, q_index)[l] *
+                            fe_values.JxW(q_index);
                         }
-                    }
-                }
-            }
-          cell->get_dof_indices(local_dof_indices);
-          constraints.distribute_local_to_global(cell_matrix,
-                                                 local_dof_indices,
-                                                 constrained_system_matrix);
-          unconstrained_system_matrix.add(local_dof_indices, cell_matrix);
-        }
-    }
+                  }
+              }
+          }
+        cell->get_dof_indices(local_dof_indices);
+        constraints.distribute_local_to_global(cell_matrix,
+                                               local_dof_indices,
+                                               constrained_system_matrix);
+        unconstrained_system_matrix.add(local_dof_indices, cell_matrix);
+      }
   constrained_system_matrix.compress(VectorOperation::add);
   unconstrained_system_matrix.compress(VectorOperation::add);
 }
 
-// matrix solve
+// Newton solve
 template <int dim>
 void
 ImplicitBeam<dim>::solve()
 {
-  // intialize solver
+  // Intialize solver
   SolverControl solver_control(10000, 1.0e-16);
 #if DEAL_II_VERSION_GTE(9, 5, 0)
   la::SolverGMRES solver(solver_control);
@@ -768,63 +729,63 @@ ImplicitBeam<dim>::solve()
   la::SolverGMRES solver(solver_control, mpi_comm);
 #endif
 
-  // preconditioner settings
+  // Preconditioner settings
   la::MPI::PreconditionJacobi                 preconditioner;
   la::MPI::PreconditionJacobi::AdditionalData data;
   preconditioner.initialize(constrained_system_matrix, data);
 
-  // solve for newton update
+  // Solve for newton update
   newton_update = 0;
   solver.solve(constrained_system_matrix,
                newton_update,
                constrained_residual,
                preconditioner);
 
-  // constrain newton update
+  // Constrain newton update
   constraints.distribute(newton_update);
 }
 
-// ouptut function
+// Ouptut function
 template <int dim>
 void
 ImplicitBeam<dim>::output_results(const unsigned int &step)
 {
-  // build data out object
+  // Build data out object
   DataOut<dim> data_out;
   data_out.attach_dof_handler(dof_handler);
 
-  // define displacement names
+  // Define displacement names
   std::vector<std::string> displacement_names;
   displacement_names.emplace_back("x_displacement");
   displacement_names.emplace_back("y_displacement");
   displacement_names.emplace_back("z_displacement");
 
-  // define velocity names
+  // Define velocity names
   std::vector<std::string> velocity_names;
   velocity_names.emplace_back("x_velocity");
   velocity_names.emplace_back("y_velocity");
   velocity_names.emplace_back("z_velocity");
 
-  // define acceleration names
+  // Define acceleration names
   std::vector<std::string> acceleration_names;
   acceleration_names.emplace_back("x_acceleration");
   acceleration_names.emplace_back("y_acceleration");
   acceleration_names.emplace_back("z_acceleration");
 
-  // update velocity and acceleration to ghosted vectors
+  // Update velocity and acceleration to ghosted vectors
   velocity     = local_velocity;
   acceleration = local_acceleration;
 
-  // add data to data out object
+  // Add data to data out object
   data_out.add_data_vector(displacement, displacement_names);
   data_out.add_data_vector(velocity, velocity_names);
   data_out.add_data_vector(acceleration, acceleration_names);
   data_out.add_data_vector(J_vector, "J");
 
-  // correlate time to time step
+  // Correlate time to time step
   data_out.set_flags(DataOutBase::VtkFlags(m_time, step));
 
-  // build patches and write in parallel
+  // Build patches and write in parallel
   data_out.build_patches();
   if (use_simplex)
     data_out.write_vtu_with_pvtu_record(
@@ -834,7 +795,7 @@ ImplicitBeam<dim>::output_results(const unsigned int &step)
       m_output_directory, "solution", step, mpi_comm, 4);
 }
 
-// run function
+// Run function
 template <int dim>
 void
 ImplicitBeam<dim>::run()
@@ -850,18 +811,18 @@ ImplicitBeam<dim>::run()
 
   assemble_mass_matrix();
 
-  // initialize problem
+  // Initialize problem
   m_time                = 0.0;
   unsigned int step     = 0;
   unsigned int out_step = 0;
   initialize_velocity();
 
-  // initialize acceleration
+  // Initialize acceleration
   update_force();
   initialize_acceleration();
   output_results(out_step);
 
-  // main time loop
+  // Main time loop
   while (m_time < m_end_time - m_dt / 2.)
     {
       ++step;
