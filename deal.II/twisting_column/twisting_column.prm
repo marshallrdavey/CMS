@@ -1,0 +1,13 @@
+set ALPHA = 4.0e6
+set KAPPA = 0.0
+set RHO = 1.1
+
+# Settings for undamped trapezoidal rule
+set BETA = 0.25
+set GAMMA = 0.5
+
+set DT = 1.0e-5
+set END_TIME = 1.0e-4
+
+set OUTPUT_FREQUENCY = 1
+set OUTPUT_DIRECTORY = ./otest
