@@ -897,14 +897,15 @@ template <int dim>
 void
 ImplicitBeam<dim>::run()
 {
-  pcout << " Number of active cells:       " << tria->n_active_cells()
-        << std::endl;
+  pcout << " Number of active cells:       " << tria->n_active_cells() << '\n';
   setup_system();
-  pcout << " Number of degrees of freedom: " << dof_handler.n_dofs()
-        << std::endl;
-
+  pcout << " Number of degrees of freedom: " << dof_handler.n_dofs() << '\n';
   pcout << " Maximal cell diameter: " << GridTools::maximal_cell_diameter(*tria)
         << "\n\n";
+  pcout << " Alpha: " << m_alpha << '\n';
+  pcout << " Kappa: " << m_kappa << '\n';
+  pcout << " DT: " << m_dt << "\n\n";
+
 
   assemble_mass_matrix();
 
@@ -953,12 +954,15 @@ ImplicitBeam<dim>::run()
 
           ++count;
           rel_tol /= constrained_residual.l2_norm();
+#ifndef NO_NEWTON_RESIDUALS
           pcout << "     Residual after newton step " << count << ": "
                 << constrained_residual.l2_norm() << " | " << rel_tol << "\n";
+#endif
         }
 
-      pcout << "   Final residual at time step " << step << ": "
-            << constrained_residual.l2_norm() << "\n\n";
+      pcout << "   Final residual after " << count
+            << " newton iterations: " << constrained_residual.l2_norm()
+            << "\n\n";
 
       if (step % m_output_frequency == 0)
         output_results(++out_step);
