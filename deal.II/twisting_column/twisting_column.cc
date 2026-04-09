@@ -45,6 +45,7 @@
 #include <math.h>
 
 #include <filesystem>
+#include <fstream>
 
 using namespace dealii;
 
@@ -74,6 +75,10 @@ declare_parameters(ParameterHandler &prm)
                     "Newmark-beta gamma parameter.");
   prm.declare_entry("DT", "1.0e-5", Patterns::Double(), "Time step size.");
   prm.declare_entry("END_TIME", "1.0", Patterns::Double(), "End time.");
+  prm.declare_entry("ENERGY_FREQUENCY",
+                    "1",
+                    Patterns::Integer(),
+                    "Frequency of energy writing.");
   prm.declare_entry("OUTPUT_FREQUENCY",
                     "1",
                     Patterns::Integer(),
@@ -115,9 +120,17 @@ I_1(const Tensor<2, dim> &FF)
   return trace(Physics::Elasticity::Kinematics::C(FF));
 }
 
-// PK1_stress from the deformation gradient, dW/dFF
+// Energy density function, W_DEV + W_DIL
 // W_DEV: Modified neoHookean model, alpha / 2 * (I1_bar - 3)
 // W_DIL: kappa / 2 * (J - 1)^2
+inline double
+work(const double I1, const double J, const double alpha, const double kappa)
+{
+  return 0.5 * alpha * (I1 / cbrt(J * J) - 3.0) +
+         0.5 * kappa * (J - 1.0) * (J - 1.0);
+}
+
+// PK1_stress from the deformation gradient, dW/dFF
 template <int dim>
 inline Tensor<2, dim>
 PK1_stress(const Tensor<2, dim> &FF,
@@ -221,6 +234,8 @@ private:
   solve();
   void
   output_results(const unsigned int &step);
+  void
+  output_energy();
 
   // MPI communicator
   MPI_Comm           mpi_comm;
@@ -257,8 +272,10 @@ private:
   double m_time;
 
   // Output parameters
-  unsigned int m_output_frequency;
-  std::string  m_output_directory;
+  unsigned int  m_energy_frequency;
+  std::ofstream m_ostrm;
+  unsigned int  m_output_frequency;
+  std::string   m_output_directory;
 
   // Constraints
   AffineConstraints<double> constraints;
@@ -317,6 +334,7 @@ ImplicitBeam<dim>::ImplicitBeam(
   , m_gamma(prm.get_double("GAMMA"))
   , m_dt(prm.get_double("DT"))
   , m_end_time(prm.get_double("END_TIME"))
+  , m_energy_frequency((unsigned int)prm.get_integer("ENERGY_FREQUENCY"))
   , m_output_frequency((unsigned int)prm.get_integer("OUTPUT_FREQUENCY"))
   , m_output_directory(prm.get("OUTPUT_DIRECTORY") + '/')
 {
@@ -802,19 +820,92 @@ ImplicitBeam<dim>::output_results(const unsigned int &step)
       m_output_directory, "solution", step, mpi_comm, 4);
 }
 
+template <int dim>
+void
+ImplicitBeam<dim>::output_energy()
+{
+  displacement = local_displacement;
+  velocity     = local_velocity;
+
+  FEValues<dim> fe_values(*fe,
+                          *quadrature_formula,
+                          update_values | update_gradients | update_JxW_values);
+
+  FEValuesExtractors::Vector  qp_fe(0);
+  std::vector<Tensor<1, dim>> qp_v;
+  std::vector<Tensor<2, dim>> qp_Grad_u;
+
+  double local_kinetic_energy = 0.0;
+  double local_elastic_energy = 0.0;
+
+  for (const auto &cell : dof_handler.active_cell_iterators())
+    if (cell->is_locally_owned())
+      {
+        fe_values.reinit(cell);
+
+        const unsigned int n_q_points = fe_values.get_quadrature().size();
+
+        qp_v.resize(n_q_points);
+        qp_Grad_u.resize(n_q_points);
+
+        fe_values[qp_fe].get_function_values(velocity, qp_v);
+        fe_values[qp_fe].get_function_gradients(displacement, qp_Grad_u);
+
+        for (const unsigned int q_index : fe_values.quadrature_point_indices())
+          {
+            const Tensor<2, dim> FF =
+              Physics::Elasticity::Kinematics::F(qp_Grad_u[q_index]);
+            const double I1 = I_1(FF);
+            const double J  = determinant(FF);
+
+            local_kinetic_energy += 0.5 * m_rho * qp_v[q_index].norm_square() *
+                                    fe_values.JxW(q_index);
+            local_elastic_energy +=
+              work(I1, J, m_alpha, m_kappa) * fe_values.JxW(q_index);
+          }
+      }
+
+  double total_kinetic_energy = 0.0;
+  double total_elastic_energy = 0.0;
+  MPI_Reduce(&local_kinetic_energy,
+             &total_kinetic_energy,
+             1,
+             MPI_DOUBLE,
+             MPI_SUM,
+             0,
+             mpi_comm);
+  MPI_Reduce(&local_elastic_energy,
+             &total_elastic_energy,
+             1,
+             MPI_DOUBLE,
+             MPI_SUM,
+             0,
+             mpi_comm);
+  if (Utilities::MPI::this_mpi_process(mpi_comm) == 0)
+    {
+      m_ostrm.open(m_output_directory + "energy.dat",
+                   std::ios::out | std::ios::app);
+      m_ostrm << std::hexfloat << m_time << ' ' << total_kinetic_energy << ' '
+              << total_elastic_energy << ' '
+              << total_elastic_energy + total_kinetic_energy << '\n';
+      m_ostrm.close();
+    }
+}
+
 // Run function
 template <int dim>
 void
 ImplicitBeam<dim>::run()
 {
-  pcout << " Number of active cells:       " << tria->n_active_cells()
-        << std::endl;
+  pcout << " Number of active cells:       " << tria->n_active_cells() << '\n';
   setup_system();
-  pcout << " Number of degrees of freedom: " << dof_handler.n_dofs()
-        << std::endl;
-
+  pcout << " Number of degrees of freedom: " << dof_handler.n_dofs() << '\n';
   pcout << " Maximal cell diameter: " << GridTools::maximal_cell_diameter(*tria)
         << "\n\n";
+  pcout << " Alpha: " << m_alpha << '\n';
+  pcout << " Kappa: " << m_kappa << '\n';
+  pcout << " DT: " << m_dt << "\n\n";
+
 
   assemble_mass_matrix();
 
@@ -823,6 +914,8 @@ ImplicitBeam<dim>::run()
   unsigned int step     = 0;
   unsigned int out_step = 0;
   initialize_velocity();
+  local_displacement = 0;
+  output_energy();
 
   // Initialize acceleration
   update_force();
@@ -861,15 +954,20 @@ ImplicitBeam<dim>::run()
 
           ++count;
           rel_tol /= constrained_residual.l2_norm();
+#ifndef NO_NEWTON_RESIDUALS
           pcout << "     Residual after newton step " << count << ": "
                 << constrained_residual.l2_norm() << " | " << rel_tol << "\n";
+#endif
         }
 
-      pcout << "   Final residual at time step " << step << ": "
-            << constrained_residual.l2_norm() << "\n\n";
+      pcout << "   Final residual after " << count
+            << " newton iterations: " << constrained_residual.l2_norm()
+            << "\n\n";
 
       if (step % m_output_frequency == 0)
         output_results(++out_step);
+      if (step % m_energy_frequency == 0)
+        output_energy();
     }
 }
 

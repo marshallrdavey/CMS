@@ -9,5 +9,6 @@ set GAMMA = 0.5
 set DT = 1.0e-5
 set END_TIME = 1.0e-4
 
+set ENERGY_FREQUENCY = 1
 set OUTPUT_FREQUENCY = 1
 set OUTPUT_DIRECTORY = ./otest
