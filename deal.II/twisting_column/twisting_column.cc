@@ -214,6 +214,8 @@ private:
   void
   update_step();
   void
+  compute_residual();
+  void
   assemble_system();
   void
   solve();
@@ -615,7 +617,12 @@ ImplicitBeam<dim>::update_step()
   local_velocity = 0;
   local_velocity.add(1.0, velocity_tilde);
   local_velocity.add(m_gamma * m_dt, local_acceleration);
+}
 
+template <int dim>
+void
+ImplicitBeam<dim>::compute_residual()
+{
   // Update the residual
   local_residual = 0;
   local_residual.add(1.0, local_force);
@@ -827,10 +834,10 @@ ImplicitBeam<dim>::run()
     {
       ++step;
       m_time += m_dt;
-      update_force();
-      assemble_system();
+
       intermediate_step();
       update_step();
+      compute_residual();
 
       pcout << " Time = " << m_time << "\n";
       pcout << "   Initial residual at time step " << step << ": "
@@ -843,13 +850,15 @@ ImplicitBeam<dim>::run()
              rel_tol > 1.09)
         {
           rel_tol = constrained_residual.l2_norm();
+          assemble_system();
           solve();
           local_displacement.add(1., newton_update);
           displacement = local_displacement;
 
           update_force();
-          assemble_system();
           update_step();
+          compute_residual();
+
           ++count;
           rel_tol /= constrained_residual.l2_norm();
           pcout << "     Residual after newton step " << count << ": "
